@@ -94,6 +94,8 @@ pub struct SyncEngine {
     pending_blocks: VecDeque<BlockHash>,
     /// Txids from the most recently validated block (for mempool cleanup).
     last_confirmed_txids: Vec<bitcoin::Txid>,
+    /// The most recently validated block and its height (for wallet feeding).
+    last_validated_block: Option<(bitcoin::Block, u32)>,
 }
 
 impl SyncEngine {
@@ -142,6 +144,7 @@ impl SyncEngine {
             validated_height: 0,
             pending_blocks: VecDeque::new(),
             last_confirmed_txids: Vec::new(),
+            last_validated_block: None,
         }
     }
 
@@ -175,6 +178,11 @@ impl SyncEngine {
     /// Returns txids from the last validated block (for mempool cleanup).
     pub fn take_confirmed_txids(&mut self) -> Vec<bitcoin::Txid> {
         std::mem::take(&mut self.last_confirmed_txids)
+    }
+
+    /// Returns the last validated block and its height (for wallet feeding).
+    pub fn take_validated_block(&mut self) -> Option<(bitcoin::Block, u32)> {
+        self.last_validated_block.take()
     }
 
     /// Handle a P2P message from a peer. Returns an optional response message.
@@ -407,6 +415,9 @@ impl SyncEngine {
                 // Collect txids for mempool cleanup
                 self.last_confirmed_txids =
                     block.txdata.iter().map(|tx| tx.compute_txid()).collect();
+
+                // Store block for wallet consumption
+                self.last_validated_block = Some((block, self.validated_height as u32));
 
                 if self.validated_height % 1_000 == 0 {
                     info!(

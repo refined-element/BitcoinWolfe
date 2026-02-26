@@ -184,6 +184,11 @@ pub struct WalletConfig {
     pub enabled: bool,
     /// Path to wallet database (relative to data_dir).
     pub db_path: String,
+    /// External (receiving) descriptor (e.g., "wpkh(tprv.../84'/1'/0'/0/*)").
+    /// If empty, the wallet will generate a new random descriptor on first run.
+    pub external_descriptor: String,
+    /// Internal (change) descriptor.
+    pub internal_descriptor: String,
 }
 
 impl Default for WalletConfig {
@@ -191,6 +196,8 @@ impl Default for WalletConfig {
         Self {
             enabled: false,
             db_path: "wallet.sqlite3".to_string(),
+            external_descriptor: String::new(),
+            internal_descriptor: String::new(),
         }
     }
 }

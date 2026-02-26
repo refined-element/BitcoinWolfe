@@ -17,8 +17,10 @@ use wolfe_rpc::server::NodeState;
 use wolfe_rpc::RpcServer;
 use wolfe_store::NodeStore;
 use wolfe_types::Config;
+use wolfe_wallet::NodeWallet;
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use crate::metrics::NodeMetrics;
 use crate::sync::SyncEngine;
@@ -187,6 +189,49 @@ async fn main() -> Result<()> {
         "sync engine initialized"
     );
 
+    // ── Initialize wallet (optional) ────────────────────────────────────
+    let wallet: Option<Arc<Mutex<NodeWallet>>> = if config.wallet.enabled {
+        let wallet_db = data_dir.join(&config.wallet.db_path);
+
+        // Use provided descriptors or generate default ones
+        let (ext_desc, int_desc) = if config.wallet.external_descriptor.is_empty() {
+            // Default: BIP84 wpkh descriptors (user should provide their own for real use)
+            let ext = format!(
+                "wpkh(tprv8ZgxMBicQKsPd7Uf69XL1XwhmjXhN7PBhGCAGrmcVg{}/84'/1'/0'/0/*)",
+                "RN5nMSDxpmkZawt2CBrDDmFQchqid4LR"
+            );
+            let int = format!(
+                "wpkh(tprv8ZgxMBicQKsPd7Uf69XL1XwhmjXhN7PBhGCAGrmcVg{}/84'/1'/0'/1/*)",
+                "RN5nMSDxpmkZawt2CBrDDmFQchqid4LR"
+            );
+            warn!("wallet enabled without descriptors — using default testnet descriptors");
+            (ext, int)
+        } else {
+            (
+                config.wallet.external_descriptor.clone(),
+                config.wallet.internal_descriptor.clone(),
+            )
+        };
+
+        match NodeWallet::open(&wallet_db, network, ext_desc, int_desc) {
+            Ok(w) => {
+                let balance = w.balance();
+                info!(
+                    confirmed = balance.confirmed,
+                    pending = balance.trusted_pending,
+                    "wallet initialized"
+                );
+                Some(Arc::new(Mutex::new(w)))
+            }
+            Err(e) => {
+                warn!(?e, "wallet failed to initialize — running without wallet");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // ── Initialize RPC server ───────────────────────────────────────────
     let rpc_state = Arc::new(NodeState::new(
         config.network.chain.clone(),
@@ -316,6 +361,17 @@ async fn main() -> Result<()> {
                         let confirmed = sync_engine.take_confirmed_txids();
                         if !confirmed.is_empty() {
                             mempool.remove_for_block(&confirmed);
+                        }
+
+                        // Feed validated blocks to the wallet
+                        if let Some(ref wallet) = wallet {
+                            if let Some((block, height)) = sync_engine.take_validated_block() {
+                                if let Ok(mut w) = wallet.lock() {
+                                    if let Err(e) = w.apply_block(&block, height) {
+                                        warn!(height, ?e, "wallet failed to process block");
+                                    }
+                                }
+                            }
                         }
 
                         // Update shared metrics
