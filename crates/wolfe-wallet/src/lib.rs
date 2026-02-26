@@ -47,11 +47,10 @@ impl NodeWallet {
                 wallet
             }
             None => {
-                let wallet =
-                    bdk_wallet::Wallet::create(ext, int)
-                        .network(network)
-                        .create_wallet(&mut db)
-                        .map_err(|e| WalletError::Bdk(e.to_string()))?;
+                let wallet = bdk_wallet::Wallet::create(ext, int)
+                    .network(network)
+                    .create_wallet(&mut db)
+                    .map_err(|e| WalletError::Bdk(e.to_string()))?;
                 info!("created new wallet at {:?}", db_path);
                 wallet
             }
@@ -91,11 +90,7 @@ impl NodeWallet {
     }
 
     /// Apply a confirmed block to the wallet (feed chain data from our node).
-    pub fn apply_block(
-        &mut self,
-        block: &bitcoin::Block,
-        height: u32,
-    ) -> Result<(), WalletError> {
+    pub fn apply_block(&mut self, block: &bitcoin::Block, height: u32) -> Result<(), WalletError> {
         // Since both our crate and BDK depend on bitcoin 0.32, the types
         // are identical. We serialize/deserialize to cross the crate boundary.
         let bdk_block: bdk_wallet::bitcoin::Block =

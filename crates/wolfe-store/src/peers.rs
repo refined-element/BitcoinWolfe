@@ -1,4 +1,6 @@
-use redb::{ReadTransaction, ReadableTable, ReadableTableMetadata, TableDefinition, WriteTransaction};
+use redb::{
+    ReadTransaction, ReadableTable, ReadableTableMetadata, TableDefinition, WriteTransaction,
+};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -140,7 +142,11 @@ impl PeerStore {
     /// Check whether `addr` is currently banned. Returns the ban expiry
     /// timestamp if banned and the ban has not yet expired relative to
     /// `now_unix`.
-    pub fn is_banned(read_txn: &ReadTransaction, addr: &str, now_unix: u64) -> StoreResult<Option<u64>> {
+    pub fn is_banned(
+        read_txn: &ReadTransaction,
+        addr: &str,
+        now_unix: u64,
+    ) -> StoreResult<Option<u64>> {
         let table = read_txn.open_table(BANNED_PEERS)?;
         match table.get(addr)? {
             Some(guard) => {

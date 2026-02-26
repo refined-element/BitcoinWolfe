@@ -2,7 +2,9 @@ use bitcoin::block::Header;
 use bitcoin::consensus::{deserialize, serialize};
 use bitcoin::hashes::Hash;
 use bitcoin::BlockHash;
-use redb::{ReadTransaction, ReadableTable, ReadableTableMetadata, TableDefinition, WriteTransaction};
+use redb::{
+    ReadTransaction, ReadableTable, ReadableTableMetadata, TableDefinition, WriteTransaction,
+};
 use tracing::{debug, warn};
 
 use crate::error::{StoreError, StoreResult};
@@ -39,11 +41,7 @@ impl HeaderStore {
     ///
     /// This updates all three index tables atomically (must be called inside a
     /// write transaction that the caller commits).
-    pub fn insert(
-        write_txn: &WriteTransaction,
-        header: &Header,
-        height: u32,
-    ) -> StoreResult<()> {
+    pub fn insert(write_txn: &WriteTransaction, header: &Header, height: u32) -> StoreResult<()> {
         let hash = header.block_hash();
         let hash_bytes: &[u8] = hash.as_ref();
         let header_bytes = serialize(header);
@@ -126,7 +124,10 @@ impl HeaderStore {
                 Self::remove(write_txn, &stored.hash)?;
                 removed.push(stored.hash);
             } else {
-                warn!(height = h, "expected header at height during disconnect, but not found");
+                warn!(
+                    height = h,
+                    "expected header at height during disconnect, but not found"
+                );
             }
         }
 
@@ -136,7 +137,10 @@ impl HeaderStore {
     // ── Read helpers (ReadTransaction) ───────────────────────────────────
 
     /// Retrieve a header by its block hash.
-    pub fn get_by_hash(read_txn: &ReadTransaction, hash: &BlockHash) -> StoreResult<Option<StoredHeader>> {
+    pub fn get_by_hash(
+        read_txn: &ReadTransaction,
+        hash: &BlockHash,
+    ) -> StoreResult<Option<StoredHeader>> {
         let hash_bytes: &[u8] = hash.as_ref();
 
         let table = read_txn.open_table(HEADERS)?;
@@ -172,7 +176,10 @@ impl HeaderStore {
     }
 
     /// Retrieve a header by chain height.
-    pub fn get_by_height(read_txn: &ReadTransaction, height: u32) -> StoreResult<Option<StoredHeader>> {
+    pub fn get_by_height(
+        read_txn: &ReadTransaction,
+        height: u32,
+    ) -> StoreResult<Option<StoredHeader>> {
         let height_bytes = height.to_be_bytes();
 
         let table = read_txn.open_table(HEIGHT_TO_HASH)?;
@@ -185,7 +192,8 @@ impl HeaderStore {
         hash_arr.copy_from_slice(hash_guard.value());
         drop(hash_guard);
 
-        let hash = BlockHash::from_raw_hash(bitcoin::hashes::sha256d::Hash::from_byte_array(hash_arr));
+        let hash =
+            BlockHash::from_raw_hash(bitcoin::hashes::sha256d::Hash::from_byte_array(hash_arr));
         Self::get_by_hash(read_txn, &hash)
     }
 
@@ -214,7 +222,9 @@ impl HeaderStore {
                 drop(key_guard);
                 drop(val_guard);
 
-                let hash = BlockHash::from_raw_hash(bitcoin::hashes::sha256d::Hash::from_byte_array(hash_arr));
+                let hash = BlockHash::from_raw_hash(
+                    bitcoin::hashes::sha256d::Hash::from_byte_array(hash_arr),
+                );
                 Self::get_by_hash(read_txn, &hash)
             }
             Some(Err(e)) => Err(StoreError::Storage(e)),
@@ -251,7 +261,8 @@ impl HeaderStore {
         hash_arr.copy_from_slice(hash_guard.value());
         drop(hash_guard);
 
-        let hash = BlockHash::from_raw_hash(bitcoin::hashes::sha256d::Hash::from_byte_array(hash_arr));
+        let hash =
+            BlockHash::from_raw_hash(bitcoin::hashes::sha256d::Hash::from_byte_array(hash_arr));
 
         // Read header bytes
         let headers_table = write_txn.open_table(HEADERS)?;

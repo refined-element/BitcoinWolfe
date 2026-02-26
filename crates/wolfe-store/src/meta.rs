@@ -124,10 +124,9 @@ impl MetaStore {
     /// Retrieve the stored user-agent string.
     pub fn user_agent(read_txn: &ReadTransaction) -> StoreResult<Option<String>> {
         match Self::get(read_txn, KEY_USER_AGENT)? {
-            Some(bytes) => Ok(Some(
-                String::from_utf8(bytes)
-                    .map_err(|e| StoreError::Corruption(format!("user_agent is not valid UTF-8: {e}")))?,
-            )),
+            Some(bytes) => Ok(Some(String::from_utf8(bytes).map_err(|e| {
+                StoreError::Corruption(format!("user_agent is not valid UTF-8: {e}"))
+            })?)),
             None => Ok(None),
         }
     }
@@ -140,10 +139,9 @@ impl MetaStore {
     /// Retrieve the stored network name.
     pub fn network(read_txn: &ReadTransaction) -> StoreResult<Option<String>> {
         match Self::get(read_txn, KEY_NETWORK)? {
-            Some(bytes) => Ok(Some(
-                String::from_utf8(bytes)
-                    .map_err(|e| StoreError::Corruption(format!("network is not valid UTF-8: {e}")))?,
-            )),
+            Some(bytes) => Ok(Some(String::from_utf8(bytes).map_err(|e| {
+                StoreError::Corruption(format!("network is not valid UTF-8: {e}"))
+            })?)),
             None => Ok(None),
         }
     }

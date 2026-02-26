@@ -106,7 +106,11 @@ impl Mempool {
             }
         }
         if removed > 0 {
-            info!(removed, remaining = self.entries.len(), "pruned mempool for new block");
+            info!(
+                removed,
+                remaining = self.entries.len(),
+                "pruned mempool for new block"
+            );
         }
     }
 
@@ -137,7 +141,11 @@ impl Mempool {
     /// Get all transactions sorted by fee rate (highest first).
     pub fn get_sorted_by_fee_rate(&self) -> Vec<MempoolEntry> {
         let mut entries: Vec<MempoolEntry> = self.entries.iter().map(|e| e.clone()).collect();
-        entries.sort_by(|a, b| b.fee_rate.partial_cmp(&a.fee_rate).unwrap_or(std::cmp::Ordering::Equal));
+        entries.sort_by(|a, b| {
+            b.fee_rate
+                .partial_cmp(&a.fee_rate)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         entries
     }
 

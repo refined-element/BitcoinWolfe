@@ -63,11 +63,11 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use bitcoinkernel::prelude::*;
 use bitcoinkernel::{
     Block, BlockHash, BlockValidationStateRef, ChainstateManager, Context, ContextBuilder, Logger,
     SynchronizationState, Warning,
 };
-use bitcoinkernel::prelude::*;
 
 use tracing::{debug, error, info, trace, warn};
 
@@ -181,10 +181,7 @@ impl ConsensusEngine {
     ///
     /// Returns [`ConsensusError`] if directory creation, context construction,
     /// chainstate manager creation, or block import fails.
-    pub fn new(
-        data_dir: impl AsRef<Path>,
-        chain_type: ChainType,
-    ) -> Result<Self, ConsensusError> {
+    pub fn new(data_dir: impl AsRef<Path>, chain_type: ChainType) -> Result<Self, ConsensusError> {
         let data_dir = data_dir.as_ref();
         let blocks_dir = data_dir.join("blocks");
 
@@ -299,19 +296,17 @@ impl ConsensusEngine {
                 );
             })
             // -- Validation callbacks --
-            .with_block_checked_validation(
-                |block: Block, state: BlockValidationStateRef<'_>| {
-                    let mode = state.mode();
-                    let result = state.result();
-                    trace!(
-                        target: "wolfe_consensus::validation",
-                        block_hash = %block.hash(),
-                        validation_mode = ?mode,
-                        validation_result = ?result,
-                        "block checked"
-                    );
-                },
-            )
+            .with_block_checked_validation(|block: Block, state: BlockValidationStateRef<'_>| {
+                let mode = state.mode();
+                let result = state.result();
+                trace!(
+                    target: "wolfe_consensus::validation",
+                    block_hash = %block.hash(),
+                    validation_mode = ?mode,
+                    validation_result = ?result,
+                    "block checked"
+                );
+            })
             .build()
             .map_err(|e| {
                 ConsensusError::InitializationFailed(format!("context creation failed: {}", e))
@@ -324,21 +319,20 @@ impl ConsensusEngine {
         );
 
         // Create the chainstate manager.
-        let chainman = ChainstateManager::new(&context, data_dir_str, blocks_dir_str).map_err(
-            |e| {
+        let chainman =
+            ChainstateManager::new(&context, data_dir_str, blocks_dir_str).map_err(|e| {
                 ConsensusError::InitializationFailed(format!(
                     "chainstate manager creation failed: {}",
                     e
                 ))
-            },
-        )?;
+            })?;
 
         info!("chainstate manager created, importing blocks...");
 
         // Complete initialization: load block index, replay if needed.
-        chainman.import_blocks().map_err(|e| {
-            ConsensusError::ImportFailed(format!("import_blocks failed: {}", e))
-        })?;
+        chainman
+            .import_blocks()
+            .map_err(|e| ConsensusError::ImportFailed(format!("import_blocks failed: {}", e)))?;
 
         let chain = chainman.active_chain();
         info!(
@@ -601,9 +595,7 @@ impl ConsensusEngine {
     /// Returns [`ConsensusError`] if the interrupt signal could not be delivered.
     pub fn interrupt(&self) -> Result<(), ConsensusError> {
         if let Some(ref ctx) = self.context {
-            ctx.interrupt().map_err(|e| {
-                ConsensusError::Kernel(e)
-            })?;
+            ctx.interrupt().map_err(|e| ConsensusError::Kernel(e))?;
             info!("kernel context interrupted");
         }
         Ok(())

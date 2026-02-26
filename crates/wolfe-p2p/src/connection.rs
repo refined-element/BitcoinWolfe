@@ -29,19 +29,20 @@ impl PeerConnection {
     ) -> Result<Self, P2pError> {
         debug!(%addr, "connecting to peer");
 
-        let stream = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            TcpStream::connect(addr),
-        )
-        .await
-        .map_err(|_| P2pError::Connection {
-            addr: addr.to_string(),
-            source: std::io::Error::new(std::io::ErrorKind::TimedOut, "connection timed out"),
-        })?
-        .map_err(|e| P2pError::Connection {
-            addr: addr.to_string(),
-            source: e,
-        })?;
+        let stream =
+            tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(addr))
+                .await
+                .map_err(|_| P2pError::Connection {
+                    addr: addr.to_string(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "connection timed out",
+                    ),
+                })?
+                .map_err(|e| P2pError::Connection {
+                    addr: addr.to_string(),
+                    source: e,
+                })?;
 
         let magic = magic_for_network(network);
         let mut codec = MessageCodec::new(magic);
