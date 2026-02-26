@@ -1,0 +1,21 @@
+[package]
+name = "wolfe-rpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "REST and JSON-RPC API server for BitcoinWolfe"
+
+[dependencies]
+bitcoin = { workspace = true }
+wolfe-types = { workspace = true }
+wolfe-mempool = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+parking_lot = { workspace = true }

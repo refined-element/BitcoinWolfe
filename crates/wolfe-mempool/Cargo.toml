@@ -1,0 +1,14 @@
+[package]
+name = "wolfe-mempool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Configurable mempool for BitcoinWolfe"
+
+[dependencies]
+bitcoin = { workspace = true }
+wolfe-types = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+dashmap = { workspace = true }

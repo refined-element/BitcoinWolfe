@@ -1,0 +1,16 @@
+[package]
+name = "wolfe-wallet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "BDK-powered descriptor wallet for BitcoinWolfe"
+
+[dependencies]
+bitcoin = { workspace = true }
+bdk_wallet = { workspace = true }
+rusqlite = { workspace = true }
+wolfe-types = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

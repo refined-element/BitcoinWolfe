@@ -1,0 +1,78 @@
+[workspace]
+members = [
+    "crates/wolfe-node",
+    "crates/wolfe-consensus",
+    "crates/wolfe-p2p",
+    "crates/wolfe-mempool",
+    "crates/wolfe-rpc",
+    "crates/wolfe-wallet",
+    "crates/wolfe-store",
+    "crates/wolfe-types",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/BitcoinWolfe/BitcoinWolfe"
+description = "A modern Bitcoin full node built in Rust around libbitcoinkernel"
+
+[workspace.dependencies]
+# Bitcoin
+bitcoin = { version = "0.32", features = ["serde", "rand-std"] }
+bip324 = "0.5"
+
+# Consensus (libbitcoinkernel bindings)
+bitcoinkernel = "0.2"
+
+# Wallet (BDK)
+bdk_wallet = { version = "1.1", features = ["rusqlite"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Storage
+redb = "2"
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Serialization / Config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Logging / Metrics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
+# HTTP / RPC
+axum = { version = "0.7", features = ["json"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+jsonrpsee = { version = "0.24", features = ["server"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Misc
+hex = "0.4"
+rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+dashmap = "6"
+bytes = "1"
+
+# Internal crates
+wolfe-types = { path = "crates/wolfe-types" }
+wolfe-consensus = { path = "crates/wolfe-consensus" }
+wolfe-p2p = { path = "crates/wolfe-p2p" }
+wolfe-mempool = { path = "crates/wolfe-mempool" }
+wolfe-rpc = { path = "crates/wolfe-rpc" }
+wolfe-wallet = { path = "crates/wolfe-wallet" }
+wolfe-store = { path = "crates/wolfe-store" }

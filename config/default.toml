@@ -1,0 +1,79 @@
+# ─── BitcoinWolfe Configuration ──────────────────────────────────────────────
+# A modern Bitcoin full node.
+
+[network]
+# Bitcoin network: "mainnet", "testnet", "testnet4", "signet", "regtest"
+chain = "mainnet"
+
+[p2p]
+# Listen address for incoming P2P connections
+listen = "0.0.0.0:8333"
+# Maximum inbound/outbound peer connections
+max_inbound = 125
+max_outbound = 10
+# Prefer BIP324 encrypted transport
+prefer_v2_transport = true
+# DNS seeds (empty = use built-in defaults)
+dns_seeds = []
+# Manual peer connections (bypasses DNS discovery)
+connect = []
+# Ban duration for misbehaving peers (seconds)
+ban_duration_secs = 86400
+
+[rpc]
+# Enable JSON-RPC and REST API server
+enabled = true
+# RPC listen address (bind to localhost for security)
+listen = "127.0.0.1:8332"
+# RPC authentication (generate unique credentials!)
+# user = "wolfe"
+# password = "changeme"
+# Enable REST API alongside JSON-RPC
+rest_enabled = true
+# CORS allowed origins for REST API (empty = no CORS)
+cors_origins = []
+
+[mempool]
+# Maximum mempool size in megabytes
+max_size_mb = 300
+# Minimum fee rate to accept transactions (sat/vB)
+min_fee_rate = 1.0
+# Maximum OP_RETURN data size in bytes
+max_datacarrier_bytes = 80
+# Accept OP_RETURN outputs
+datacarrier = true
+# Enable full Replace-By-Fee
+full_rbf = true
+# Maximum ancestor/descendant chain length
+max_ancestors = 25
+max_descendants = 25
+# Evict mempool transactions older than this (hours)
+expiry_hours = 336
+
+[wallet]
+# Enable the built-in BDK wallet
+enabled = false
+# Wallet database path (relative to data_dir)
+db_path = "wallet.sqlite3"
+
+[storage]
+# Root data directory for all node data
+# data_dir = "~/.bitcoinwolfe"
+# Block pruning target (0 = no pruning, keep full chain)
+prune_target_mb = 0
+# Database cache size in megabytes
+db_cache_mb = 450
+
+[logging]
+# Log level: "trace", "debug", "info", "warn", "error"
+level = "info"
+# Output format: "text" or "json"
+format = "text"
+# Log to file (in addition to stdout)
+# file = "wolfe.log"
+
+[metrics]
+# Enable Prometheus metrics endpoint
+enabled = true
+# Metrics listen address
+listen = "127.0.0.1:9332"
