@@ -14,18 +14,43 @@ use crate::error::P2pError;
 use crate::peer::{Peer, PeerId, PeerInfo};
 use wolfe_types::config::P2pConfig;
 
-/// Default Bitcoin DNS seeds for mainnet peer discovery.
-const DEFAULT_DNS_SEEDS: &[&str] = &[
-    "seed.bitcoin.sipa.be",
-    "dnsseed.bluematt.me",
-    "dnsseed.bitcoin.dashjr-list-of-hierarchical-deterministic-wallets.org",
-    "seed.bitcoinstats.com",
-    "seed.bitcoin.jonasschnelli.ch",
-    "seed.btc.petertodd.net",
-    "seed.bitcoin.sprovoost.nl",
-    "dnsseed.emzy.de",
-    "seed.bitcoin.wiz.biz",
-];
+/// DNS seeds per network. Bitcoin Core-compatible peer discovery.
+fn dns_seeds_for_network(network: bitcoin::Network) -> &'static [&'static str] {
+    match network {
+        bitcoin::Network::Bitcoin => &[
+            "seed.bitcoin.sipa.be",
+            "dnsseed.bluematt.me",
+            "dnsseed.bitcoin.dashjr-list-of-hierarchical-deterministic-wallets.org",
+            "seed.bitcoinstats.com",
+            "seed.bitcoin.jonasschnelli.ch",
+            "seed.btc.petertodd.net",
+            "seed.bitcoin.sprovoost.nl",
+            "dnsseed.emzy.de",
+            "seed.bitcoin.wiz.biz",
+        ],
+        bitcoin::Network::Testnet => &[
+            "testnet-seed.bitcoin.jonasschnelli.ch",
+            "seed.tbtc.petertodd.net",
+            "seed.testnet.bitcoin.sprovoost.nl",
+            "testnet-seed.bluematt.me",
+        ],
+        bitcoin::Network::Signet => &["seed.signet.bitcoin.sprovoost.nl"],
+        bitcoin::Network::Regtest => &[],
+        // Catch future variants
+        _ => &[],
+    }
+}
+
+/// Default P2P port per network.
+fn default_port_for_network(network: bitcoin::Network) -> u16 {
+    match network {
+        bitcoin::Network::Bitcoin => 8333,
+        bitcoin::Network::Testnet => 18333,
+        bitcoin::Network::Signet => 38333,
+        bitcoin::Network::Regtest => 18444,
+        _ => 8333,
+    }
+}
 
 /// Events emitted by the peer manager for the node to handle.
 #[derive(Debug)]
@@ -45,6 +70,10 @@ pub struct PeerManager {
     config: P2pConfig,
     network: bitcoin::Network,
     peers: Arc<DashMap<PeerId, Peer>>,
+    /// Per-peer outbound message channels. When the node wants to send a message
+    /// to a peer, it drops the message into that peer's channel; the peer's
+    /// event loop picks it up and writes it to the TCP stream.
+    peer_senders: Arc<DashMap<PeerId, mpsc::Sender<NetworkMessage>>>,
     next_peer_id: AtomicU64,
     event_tx: mpsc::Sender<PeerEvent>,
     event_rx: Option<mpsc::Receiver<PeerEvent>>,
@@ -58,6 +87,7 @@ impl PeerManager {
             config,
             network,
             peers: Arc::new(DashMap::new()),
+            peer_senders: Arc::new(DashMap::new()),
             next_peer_id: AtomicU64::new(1),
             event_tx,
             event_rx: Some(event_rx),
@@ -147,6 +177,7 @@ impl PeerManager {
             let height = self.best_height.load(Ordering::Relaxed) as i32;
             let event_tx = self.event_tx.clone();
             let peers = self.peers.clone();
+            let peer_senders = self.peer_senders.clone();
 
             tokio::spawn(async move {
                 match PeerConnection::accept(
@@ -161,9 +192,12 @@ impl PeerManager {
                 {
                     Ok(mut conn) => {
                         let info = conn.info.clone();
+                        let (msg_tx, msg_rx) = mpsc::channel(256);
                         peers.insert(peer_id, Peer::new(info.clone()));
+                        peer_senders.insert(peer_id, msg_tx);
                         let _ = event_tx.send(PeerEvent::Connected(info)).await;
-                        Self::run_peer_loop(&mut conn, &event_tx, &peers).await;
+                        Self::run_peer_loop(&mut conn, msg_rx, &event_tx, &peers).await;
+                        peer_senders.remove(&peer_id);
                         peers.remove(&peer_id);
                         let _ = event_tx.send(PeerEvent::Disconnected(peer_id)).await;
                     }
@@ -196,13 +230,17 @@ impl PeerManager {
         {
             Ok(mut conn) => {
                 let info = conn.info.clone();
+                let (msg_tx, msg_rx) = mpsc::channel(256);
                 self.peers.insert(peer_id, Peer::new(info.clone()));
+                self.peer_senders.insert(peer_id, msg_tx);
                 let _ = self.event_tx.send(PeerEvent::Connected(info)).await;
 
                 let event_tx = self.event_tx.clone();
                 let peers = self.peers.clone();
+                let peer_senders = self.peer_senders.clone();
                 tokio::spawn(async move {
-                    Self::run_peer_loop(&mut conn, &event_tx, &peers).await;
+                    Self::run_peer_loop(&mut conn, msg_rx, &event_tx, &peers).await;
+                    peer_senders.remove(&peer_id);
                     peers.remove(&peer_id);
                     let _ = event_tx.send(PeerEvent::Disconnected(peer_id)).await;
                 });
@@ -214,59 +252,77 @@ impl PeerManager {
     }
 
     /// Main message loop for a single peer.
+    ///
+    /// Uses `tokio::select!` to concurrently:
+    /// - Read inbound messages from the TCP stream and forward them to the node
+    /// - Read outbound messages from the per-peer channel and write them to TCP
     async fn run_peer_loop(
         conn: &mut PeerConnection,
+        mut outbound_rx: mpsc::Receiver<NetworkMessage>,
         event_tx: &mpsc::Sender<PeerEvent>,
         peers: &DashMap<PeerId, Peer>,
     ) {
         let peer_id = conn.info.id;
         loop {
-            match conn.recv().await {
-                Ok(msg) => {
-                    // Update last-seen timestamp
-                    if let Some(mut peer) = peers.get_mut(&peer_id) {
-                        peer.last_seen = std::time::Instant::now();
-                    }
+            tokio::select! {
+                // Inbound: read a message from the peer over TCP
+                recv_result = conn.recv() => {
+                    match recv_result {
+                        Ok(msg) => {
+                            // Update last-seen timestamp
+                            if let Some(mut peer) = peers.get_mut(&peer_id) {
+                                peer.last_seen = std::time::Instant::now();
+                            }
 
-                    match &msg {
-                        NetworkMessage::Ping(nonce) => {
-                            if let Err(e) = conn.send(NetworkMessage::Pong(*nonce)).await {
-                                debug!(?e, "failed to send pong");
+                            match &msg {
+                                NetworkMessage::Ping(nonce) => {
+                                    if let Err(e) = conn.send(NetworkMessage::Pong(*nonce)).await {
+                                        debug!(?e, "failed to send pong");
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                NetworkMessage::Pong(nonce) => {
+                                    if let Some(mut peer) = peers.get_mut(&peer_id) {
+                                        if peer.ping_nonce == Some(*nonce) {
+                                            if let Some(sent) = peer.last_ping {
+                                                peer.ping_latency_ms =
+                                                    Some(sent.elapsed().as_millis() as u64);
+                                            }
+                                            peer.ping_nonce = None;
+                                        }
+                                    }
+                                    continue;
+                                }
+                                _ => {}
+                            }
+
+                            // Forward all other messages to the node
+                            if event_tx
+                                .send(PeerEvent::Message(peer_id, msg))
+                                .await
+                                .is_err()
+                            {
                                 break;
                             }
-                            continue;
                         }
-                        NetworkMessage::Pong(nonce) => {
-                            if let Some(mut peer) = peers.get_mut(&peer_id) {
-                                if peer.ping_nonce == Some(*nonce) {
-                                    if let Some(sent) = peer.last_ping {
-                                        peer.ping_latency_ms =
-                                            Some(sent.elapsed().as_millis() as u64);
-                                    }
-                                    peer.ping_nonce = None;
-                                }
-                            }
-                            continue;
+                        Err(P2pError::Disconnected) => {
+                            info!(peer = ?peer_id, "peer disconnected");
+                            break;
                         }
-                        _ => {}
+                        Err(e) => {
+                            warn!(peer = ?peer_id, ?e, "peer error");
+                            break;
+                        }
                     }
+                }
 
-                    // Forward all other messages to the node
-                    if event_tx
-                        .send(PeerEvent::Message(peer_id, msg))
-                        .await
-                        .is_err()
-                    {
+                // Outbound: the node wants to send a message to this peer
+                Some(msg) = outbound_rx.recv() => {
+                    if let Err(e) = conn.send(msg).await {
+                        warn!(peer = ?peer_id, ?e, "failed to send message to peer");
                         break;
                     }
-                }
-                Err(P2pError::Disconnected) => {
-                    info!(peer = ?peer_id, "peer disconnected");
-                    break;
-                }
-                Err(e) => {
-                    warn!(peer = ?peer_id, ?e, "peer error");
-                    break;
                 }
             }
         }
@@ -274,23 +330,31 @@ impl PeerManager {
 
     /// Discover peers via DNS seeds.
     async fn discover_peers(&self) {
-        let seeds = if self.config.dns_seeds.is_empty() {
-            DEFAULT_DNS_SEEDS.iter().map(|s| s.to_string()).collect()
+        let port = default_port_for_network(self.network);
+
+        let seeds: Vec<String> = if self.config.dns_seeds.is_empty() {
+            dns_seeds_for_network(self.network)
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
         } else {
             self.config.dns_seeds.clone()
         };
 
+        if seeds.is_empty() {
+            info!("no DNS seeds configured for this network");
+            return;
+        }
+
         for seed in &seeds {
             debug!(seed, "resolving DNS seed");
-            match tokio::net::lookup_host(format!("{}:8333", seed)).await {
+            match tokio::net::lookup_host(format!("{}:{}", seed, port)).await {
                 Ok(addrs) => {
                     let addrs: Vec<SocketAddr> = addrs.collect();
                     info!(seed, count = addrs.len(), "resolved DNS seed");
 
                     for addr in addrs.into_iter().take(3) {
-                        let this_clone = self.peers.clone();
-                        let outbound_count =
-                            this_clone.iter().filter(|p| !p.info.inbound).count();
+                        let outbound_count = self.peers.iter().filter(|p| !p.info.inbound).count();
                         if outbound_count >= self.config.max_outbound {
                             return;
                         }
@@ -305,20 +369,28 @@ impl PeerManager {
     }
 
     /// Send a message to a specific peer.
-    pub async fn send_to_peer(
-        &self,
-        _peer_id: PeerId,
-        _msg: NetworkMessage,
-    ) -> Result<(), P2pError> {
-        // TODO: Maintain a map of peer_id -> sender channel to route messages
-        // For now this is a placeholder - the full implementation would use
-        // per-peer mpsc channels created during connection setup.
-        Ok(())
+    pub async fn send_to_peer(&self, peer_id: PeerId, msg: NetworkMessage) -> Result<(), P2pError> {
+        match self.peer_senders.get(&peer_id) {
+            Some(sender) => {
+                sender
+                    .send(msg)
+                    .await
+                    .map_err(|_| P2pError::ChannelClosed)?;
+                Ok(())
+            }
+            None => {
+                debug!(peer = ?peer_id, "send_to_peer: peer not found");
+                Err(P2pError::Disconnected)
+            }
+        }
     }
 
     /// Broadcast a message to all connected peers.
-    pub async fn broadcast(&self, _msg: NetworkMessage) -> Result<(), P2pError> {
-        // TODO: Same as send_to_peer - needs per-peer channels
+    pub async fn broadcast(&self, msg: NetworkMessage) -> Result<(), P2pError> {
+        for entry in self.peer_senders.iter() {
+            // Best-effort: skip peers whose channel is full
+            let _ = entry.value().try_send(msg.clone());
+        }
         Ok(())
     }
 }

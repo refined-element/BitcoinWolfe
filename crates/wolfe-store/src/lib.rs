@@ -109,6 +109,30 @@ impl NodeStore {
         Ok(())
     }
 
+    /// Store a batch of block headers and update sync progress in a single
+    /// atomic transaction. Much faster than individual inserts for bulk sync.
+    pub fn insert_headers_batch(
+        &self,
+        headers: &[(bitcoin::block::Header, u32)],
+    ) -> StoreResult<()> {
+        if headers.is_empty() {
+            return Ok(());
+        }
+
+        let write_txn = self.write_txn()?;
+        for (header, height) in headers {
+            HeaderStore::insert(&write_txn, header, *height)?;
+        }
+
+        // Update sync progress to the last header in the batch
+        let (last_header, last_height) = headers.last().unwrap();
+        let hash = last_header.block_hash();
+        MetaStore::set_sync_progress(&write_txn, *last_height, hash.as_ref())?;
+        write_txn.commit()?;
+
+        Ok(())
+    }
+
     /// Perform a chain reorganisation: disconnect headers from
     /// `current_height` down to `fork_height` (exclusive), then connect the
     /// new headers starting at `fork_height + 1`.

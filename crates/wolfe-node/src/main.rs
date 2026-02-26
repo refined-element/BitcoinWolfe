@@ -18,6 +18,8 @@ use wolfe_rpc::RpcServer;
 use wolfe_store::NodeStore;
 use wolfe_types::Config;
 
+use std::collections::HashMap;
+
 use crate::metrics::NodeMetrics;
 use crate::sync::SyncEngine;
 
@@ -89,8 +91,8 @@ async fn main() -> Result<()> {
     }
 
     // ── Initialize logging ──────────────────────────────────────────────
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
 
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
@@ -145,10 +147,7 @@ async fn main() -> Result<()> {
 
     // ── Initialize sync engine ──────────────────────────────────────────
     let mut sync_engine = SyncEngine::new(store.clone(), network, shutdown.clone());
-    info!(
-        tip = sync_engine.tip_height(),
-        "sync engine initialized"
-    );
+    info!(tip = sync_engine.tip_height(), "sync engine initialized");
 
     // ── Initialize RPC server ───────────────────────────────────────────
     let rpc_state = Arc::new(NodeState::new(
@@ -210,6 +209,9 @@ async fn main() -> Result<()> {
 
     info!("BitcoinWolfe is running. Press Ctrl+C to stop.");
 
+    // Track peer_id → addr so we can clean up RPC state on disconnect
+    let mut peer_addrs: HashMap<u64, std::net::SocketAddr> = HashMap::new();
+
     // ── Main event loop ─────────────────────────────────────────────────
     loop {
         tokio::select! {
@@ -231,8 +233,19 @@ async fn main() -> Result<()> {
                             node_metrics.peers_outbound.fetch_add(1, Ordering::Relaxed);
                         }
 
-                        // Update RPC state
+                        // Track addr for cleanup on disconnect
+                        peer_addrs.insert(info.id.0, info.addr);
+
+                        // Update RPC state with new peer
                         rpc_state.set_best_height(sync_engine.tip_height());
+                        rpc_state.add_peer_info(wolfe_types::PeerInfoSnapshot {
+                            addr: info.addr,
+                            user_agent: info.user_agent.clone(),
+                            version: info.version,
+                            inbound: info.inbound,
+                            v2_transport: info.v2_transport,
+                            start_height: info.start_height,
+                        });
 
                         // Tell sync engine about the new peer
                         if let Some(msg) = sync_engine.on_peer_connected(info.id, info.start_height) {
@@ -244,6 +257,11 @@ async fn main() -> Result<()> {
                         info!(peer = ?peer_id, "peer disconnected");
                         node_metrics.peers_connected.fetch_sub(1, Ordering::Relaxed);
                         sync_engine.on_peer_disconnected(peer_id);
+
+                        // Remove from RPC state
+                        if let Some(addr) = peer_addrs.remove(&peer_id.0) {
+                            rpc_state.remove_peer_info(addr);
+                        }
                     }
 
                     PeerEvent::Message(peer_id, msg) => {
@@ -266,6 +284,7 @@ async fn main() -> Result<()> {
 
                         // Keep RPC state in sync
                         rpc_state.set_best_height(sync_engine.tip_height());
+                        rpc_state.set_best_hash(sync_engine.tip_hash().to_string());
                         rpc_state.set_syncing(
                             sync_engine.progress().state != sync::SyncState::Synced
                         );

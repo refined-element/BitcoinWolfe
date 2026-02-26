@@ -42,7 +42,7 @@ pub async fn get_mempool(State(state): State<Arc<NodeState>>) -> Json<Value> {
 
 /// GET /api/peers - Connected peers
 pub async fn get_peers(State(state): State<Arc<NodeState>>) -> Json<Value> {
-    let peers = &state.peer_infos;
+    let peers = state.peer_infos();
     let peer_list: Vec<Value> = peers
         .iter()
         .map(|p| {
@@ -134,7 +134,7 @@ async fn dispatch_rpc(
             "version": wolfe_types::VERSION,
             "subversion": wolfe_types::user_agent(),
             "protocolversion": 70016,
-            "connections": state.peer_infos.len(),
+            "connections": state.peer_count(),
         })),
 
         "getmempoolinfo" => Ok(json!({
@@ -146,7 +146,7 @@ async fn dispatch_rpc(
 
         "getpeerinfo" => {
             let peers: Vec<Value> = state
-                .peer_infos
+                .peer_infos()
                 .iter()
                 .map(|p| {
                     json!({

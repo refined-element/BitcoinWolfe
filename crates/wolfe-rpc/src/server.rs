@@ -17,7 +17,7 @@ use crate::handlers;
 pub struct NodeState {
     pub chain: String,
     pub mempool: Arc<Mempool>,
-    pub peer_infos: Vec<wolfe_types::PeerInfoSnapshot>,
+    peer_infos: parking_lot::RwLock<Vec<wolfe_types::PeerInfoSnapshot>>,
     pub started_at: Instant,
     best_height: AtomicU64,
     best_hash: parking_lot::RwLock<String>,
@@ -29,7 +29,7 @@ impl NodeState {
         Self {
             chain,
             mempool,
-            peer_infos: Vec::new(),
+            peer_infos: parking_lot::RwLock::new(Vec::new()),
             started_at: Instant::now(),
             best_height: AtomicU64::new(0),
             best_hash: parking_lot::RwLock::new(String::new()),
@@ -61,6 +61,26 @@ impl NodeState {
         self.syncing.store(syncing, Ordering::Relaxed);
     }
 
+    pub fn peer_count(&self) -> usize {
+        self.peer_infos.read().len()
+    }
+
+    pub fn peer_infos(&self) -> Vec<wolfe_types::PeerInfoSnapshot> {
+        self.peer_infos.read().clone()
+    }
+
+    pub fn set_peer_infos(&self, infos: Vec<wolfe_types::PeerInfoSnapshot>) {
+        *self.peer_infos.write() = infos;
+    }
+
+    pub fn add_peer_info(&self, info: wolfe_types::PeerInfoSnapshot) {
+        self.peer_infos.write().push(info);
+    }
+
+    pub fn remove_peer_info(&self, addr: std::net::SocketAddr) {
+        self.peer_infos.write().retain(|p| p.addr != addr);
+    }
+
     pub fn get_info(&self) -> serde_json::Value {
         serde_json::json!({
             "version": wolfe_types::VERSION,
@@ -69,7 +89,7 @@ impl NodeState {
             "blocks": self.best_height(),
             "best_block_hash": self.best_hash(),
             "mempool_size": self.mempool.len(),
-            "peers": self.peer_infos.len(),
+            "peers": self.peer_count(),
             "uptime_secs": self.started_at.elapsed().as_secs(),
             "syncing": self.is_syncing(),
         })
