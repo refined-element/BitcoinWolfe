@@ -40,6 +40,10 @@ struct Cli {
     #[arg(short, long)]
     datadir: Option<PathBuf>,
 
+    /// Connect to a specific peer (overrides config and DNS seeds)
+    #[arg(long)]
+    connect: Option<String>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -88,6 +92,9 @@ async fn main() -> Result<()> {
     }
     if let Some(datadir) = &cli.datadir {
         config.storage.data_dir = datadir.clone();
+    }
+    if let Some(connect) = &cli.connect {
+        config.p2p.connect = vec![connect.clone()];
     }
 
     // ── Initialize logging ──────────────────────────────────────────────

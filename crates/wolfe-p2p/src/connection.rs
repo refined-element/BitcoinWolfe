@@ -70,12 +70,29 @@ impl PeerConnection {
             .write_message(&mut writer, NetworkMessage::Verack)
             .await?;
 
-        // Read their verack
-        match codec.read_message(&mut reader).await? {
-            NetworkMessage::Verack => {}
-            other => {
-                warn!(%addr, cmd = ?other.cmd(), "expected verack, got something else");
+        // Read messages until we get verack. Modern Bitcoin Core (v0.21+) sends
+        // feature negotiation messages (wtxidrelay, sendaddrv2, sendheaders)
+        // between version and verack.
+        let mut got_verack = false;
+        for _ in 0..10 {
+            match codec.read_message(&mut reader).await? {
+                NetworkMessage::Verack => {
+                    got_verack = true;
+                    break;
+                }
+                NetworkMessage::SendHeaders => {
+                    debug!(%addr, "peer requests header announcements");
+                }
+                other => {
+                    debug!(%addr, cmd = ?other.cmd(), "pre-verack feature negotiation");
+                }
             }
+        }
+        if !got_verack {
+            return Err(P2pError::Handshake {
+                addr: addr.to_string(),
+                reason: "did not receive verack after 10 messages".to_string(),
+            });
         }
 
         let info = PeerInfo {
@@ -142,8 +159,15 @@ impl PeerConnection {
             .write_message(&mut writer, NetworkMessage::Verack)
             .await?;
 
-        // Read their verack
-        let _ = codec.read_message(&mut reader).await?;
+        // Read messages until verack (see connect() for rationale)
+        for _ in 0..10 {
+            match codec.read_message(&mut reader).await? {
+                NetworkMessage::Verack => break,
+                other => {
+                    debug!(%addr, cmd = ?other.cmd(), "pre-verack feature negotiation");
+                }
+            }
+        }
 
         let info = PeerInfo {
             id: peer_id,

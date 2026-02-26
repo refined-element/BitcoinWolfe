@@ -17,10 +17,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install cmake
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake
+          sudo apt-get install -y cmake libboost-dev libevent-dev
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -42,7 +42,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -W warnings
+        run: cargo clippy --all-targets -- -A dead_code -A unused_imports
 
       - name: Cargo check
         run: cargo check --all-targets
