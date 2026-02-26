@@ -82,3 +82,410 @@ impl MessageCodec {
 pub fn magic_for_network(network: bitcoin::Network) -> Magic {
     Magic::from_params(network.params())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoin::hashes::Hash as _;
+    use bitcoin::p2p::address::Address;
+    use bitcoin::p2p::message_blockdata::GetHeadersMessage;
+    use bitcoin::p2p::message_network::VersionMessage;
+    use bitcoin::p2p::{Magic, ServiceFlags};
+    use bitcoin::Network;
+    use std::io::Cursor;
+    use std::net::SocketAddr;
+
+    // -----------------------------------------------------------------------
+    // Test helpers
+    // -----------------------------------------------------------------------
+
+    /// Build a MessageCodec wired to mainnet magic.
+    fn mainnet_codec() -> MessageCodec {
+        MessageCodec::new(Magic::BITCOIN)
+    }
+
+    /// Construct a representative VersionMessage for testing.
+    fn sample_version_msg() -> NetworkMessage {
+        let addr: SocketAddr = "127.0.0.1:8333".parse().unwrap();
+        let address = Address::new(&addr, ServiceFlags::NONE);
+        NetworkMessage::Version(VersionMessage::new(
+            ServiceFlags::NETWORK,
+            1_700_000_000, // timestamp
+            address.clone(),
+            address,
+            0xCAFE_BEEF, // nonce
+            "/BitcoinWolfe:0.1.0/".to_string(),
+            850_000, // start_height
+        ))
+    }
+
+    /// Round-trip helper: serialise `msg` via write_message, then deserialise
+    /// it back with read_message and return the decoded message.
+    async fn round_trip(msg: NetworkMessage) -> NetworkMessage {
+        let codec = mainnet_codec();
+
+        // Write into an in-memory buffer.
+        let mut buf: Vec<u8> = Vec::new();
+        codec.write_message(&mut buf, msg).await.unwrap();
+
+        // Read back from the buffer via Cursor (implements AsyncRead).
+        let mut reader = Cursor::new(buf);
+        let mut read_codec = mainnet_codec();
+        read_codec.read_message(&mut reader).await.unwrap()
+    }
+
+    // -----------------------------------------------------------------------
+    // magic_for_network
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn magic_for_network_mainnet() {
+        assert_eq!(magic_for_network(Network::Bitcoin), Magic::BITCOIN);
+    }
+
+    #[test]
+    fn magic_for_network_testnet() {
+        assert_eq!(magic_for_network(Network::Testnet), Magic::TESTNET3);
+    }
+
+    #[test]
+    fn magic_for_network_signet() {
+        assert_eq!(magic_for_network(Network::Signet), Magic::SIGNET);
+    }
+
+    #[test]
+    fn magic_for_network_regtest() {
+        assert_eq!(magic_for_network(Network::Regtest), Magic::REGTEST);
+    }
+
+    #[test]
+    fn magic_for_network_testnet4() {
+        assert_eq!(magic_for_network(Network::Testnet4), Magic::TESTNET4);
+    }
+
+    // -----------------------------------------------------------------------
+    // Round-trip tests (write then read)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn round_trip_version() {
+        let original = sample_version_msg();
+        let decoded = round_trip(original.clone()).await;
+        assert_eq!(decoded, original);
+    }
+
+    #[tokio::test]
+    async fn round_trip_verack() {
+        let decoded = round_trip(NetworkMessage::Verack).await;
+        assert_eq!(decoded, NetworkMessage::Verack);
+    }
+
+    #[tokio::test]
+    async fn round_trip_ping() {
+        let nonce: u64 = 0xDEAD_BEEF_CAFE_BABE;
+        let decoded = round_trip(NetworkMessage::Ping(nonce)).await;
+        assert_eq!(decoded, NetworkMessage::Ping(nonce));
+    }
+
+    #[tokio::test]
+    async fn round_trip_pong() {
+        let nonce: u64 = 42;
+        let decoded = round_trip(NetworkMessage::Pong(nonce)).await;
+        assert_eq!(decoded, NetworkMessage::Pong(nonce));
+    }
+
+    #[tokio::test]
+    async fn round_trip_getheaders() {
+        use bitcoin::BlockHash;
+
+        let msg = NetworkMessage::GetHeaders(GetHeadersMessage::new(
+            vec![BlockHash::all_zeros()],
+            BlockHash::all_zeros(),
+        ));
+        let decoded = round_trip(msg.clone()).await;
+        assert_eq!(decoded, msg);
+    }
+
+    #[tokio::test]
+    async fn round_trip_sendheaders() {
+        let decoded = round_trip(NetworkMessage::SendHeaders).await;
+        assert_eq!(decoded, NetworkMessage::SendHeaders);
+    }
+
+    #[tokio::test]
+    async fn round_trip_getaddr() {
+        let decoded = round_trip(NetworkMessage::GetAddr).await;
+        assert_eq!(decoded, NetworkMessage::GetAddr);
+    }
+
+    #[tokio::test]
+    async fn round_trip_mempool() {
+        let decoded = round_trip(NetworkMessage::MemPool).await;
+        assert_eq!(decoded, NetworkMessage::MemPool);
+    }
+
+    // -----------------------------------------------------------------------
+    // write_message serialisation sanity checks
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn write_message_starts_with_magic_bytes() {
+        let codec = mainnet_codec();
+        let mut buf: Vec<u8> = Vec::new();
+        codec
+            .write_message(&mut buf, NetworkMessage::Verack)
+            .await
+            .unwrap();
+
+        // The first 4 bytes must be the mainnet magic.
+        assert_eq!(&buf[0..4], &Magic::BITCOIN.to_bytes());
+    }
+
+    #[tokio::test]
+    async fn write_message_header_payload_length_matches() {
+        let codec = mainnet_codec();
+        let msg = NetworkMessage::Ping(12345);
+        let mut buf: Vec<u8> = Vec::new();
+        codec.write_message(&mut buf, msg).await.unwrap();
+
+        // Bytes 16..20 encode the payload length as little-endian u32.
+        let payload_len = u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]) as usize;
+
+        // Ping payload is exactly 8 bytes (a u64 nonce).
+        assert_eq!(payload_len, 8);
+        // Total buffer: 24 header + 8 payload.
+        assert_eq!(buf.len(), 24 + 8);
+    }
+
+    #[tokio::test]
+    async fn write_verack_has_zero_length_payload() {
+        let codec = mainnet_codec();
+        let mut buf: Vec<u8> = Vec::new();
+        codec
+            .write_message(&mut buf, NetworkMessage::Verack)
+            .await
+            .unwrap();
+
+        let payload_len = u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]) as usize;
+        assert_eq!(payload_len, 0);
+        // Total buffer is exactly the 24-byte header.
+        assert_eq!(buf.len(), 24);
+    }
+
+    // -----------------------------------------------------------------------
+    // Error path: oversized message
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn read_rejects_oversized_payload() {
+        // Craft a raw 24-byte header with a payload length exceeding 4 MB.
+        let oversized_len: u32 = (4 * 1024 * 1024 + 1) as u32; // MAX_MESSAGE_SIZE + 1
+        let mut header = [0u8; 24];
+
+        // Set magic bytes (mainnet).
+        header[0..4].copy_from_slice(&Magic::BITCOIN.to_bytes());
+        // Command: "ping" padded with zeros (12 bytes).
+        header[4..8].copy_from_slice(b"ping");
+        // Payload length at bytes 16..20.
+        header[16..20].copy_from_slice(&oversized_len.to_le_bytes());
+
+        let mut reader = Cursor::new(header.to_vec());
+        let mut codec = mainnet_codec();
+
+        let result = codec.read_message(&mut reader).await;
+        assert!(result.is_err(), "expected an error for oversized payload");
+
+        let err = result.unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("too large"),
+            "error should mention 'too large', got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_accepts_payload_at_exact_limit() {
+        // A payload of exactly MAX_MESSAGE_SIZE (4 MB) should pass the size
+        // check. It will still fail at consensus decoding because we are not
+        // providing a real message, but the size guard itself must not fire.
+        let limit: u32 = (4 * 1024 * 1024) as u32;
+        let mut header = [0u8; 24];
+        header[0..4].copy_from_slice(&Magic::BITCOIN.to_bytes());
+        header[4..8].copy_from_slice(b"ping");
+        header[16..20].copy_from_slice(&limit.to_le_bytes());
+
+        // We need header + `limit` bytes of payload. The codec will try to
+        // read_exact that many bytes. We provide them (all zeros), which will
+        // pass the size check but fail consensus decode -- and that is the
+        // behaviour we want to verify: no "too large" error.
+        let mut data = header.to_vec();
+        data.resize(24 + limit as usize, 0);
+
+        let mut reader = Cursor::new(data);
+        let mut codec = mainnet_codec();
+
+        let result = codec.read_message(&mut reader).await;
+        // Must NOT be the "too large" variant.
+        match &result {
+            Err(P2pError::InvalidMessage { reason, .. }) => {
+                panic!("size check should not fire at exact limit, got: {reason}");
+            }
+            // Any other error (Encode / Io) is fine -- the payload is garbage.
+            Err(_) => {}
+            // If it somehow decoded, that is also acceptable.
+            Ok(_) => {}
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Error path: truncated stream
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn read_errors_on_empty_stream() {
+        let mut reader = Cursor::new(Vec::<u8>::new());
+        let mut codec = mainnet_codec();
+
+        let result = codec.read_message(&mut reader).await;
+        assert!(result.is_err(), "reading from empty stream must fail");
+    }
+
+    #[tokio::test]
+    async fn read_errors_on_truncated_header() {
+        // Provide only 10 bytes -- less than the 24-byte header.
+        let data = vec![0u8; 10];
+        let mut reader = Cursor::new(data);
+        let mut codec = mainnet_codec();
+
+        let result = codec.read_message(&mut reader).await;
+        assert!(result.is_err(), "truncated header must produce an error");
+    }
+
+    #[tokio::test]
+    async fn read_errors_on_truncated_payload() {
+        // Build a valid 24-byte header claiming 100 bytes of payload, but
+        // only supply 50 actual payload bytes.
+        let mut header = [0u8; 24];
+        header[0..4].copy_from_slice(&Magic::BITCOIN.to_bytes());
+        header[4..8].copy_from_slice(b"ping");
+        let payload_len: u32 = 100;
+        header[16..20].copy_from_slice(&payload_len.to_le_bytes());
+
+        let mut data = header.to_vec();
+        data.extend_from_slice(&[0u8; 50]); // only 50 of the claimed 100
+
+        let mut reader = Cursor::new(data);
+        let mut codec = mainnet_codec();
+
+        let result = codec.read_message(&mut reader).await;
+        assert!(result.is_err(), "truncated payload must produce an error");
+    }
+
+    // -----------------------------------------------------------------------
+    // Round-trip via tokio::io::duplex (full-duplex async channel)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn round_trip_over_duplex_channel() {
+        let (mut client, mut server) = tokio::io::duplex(8192);
+
+        let write_codec = mainnet_codec();
+        let original = NetworkMessage::Ping(0x1234_5678_9ABC_DEF0);
+
+        // Writer side.
+        write_codec
+            .write_message(&mut client, original.clone())
+            .await
+            .unwrap();
+        // Shutdown the write half so the reader sees EOF after the message.
+        drop(client);
+
+        // Reader side.
+        let mut read_codec = mainnet_codec();
+        let decoded = read_codec.read_message(&mut server).await.unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    // -----------------------------------------------------------------------
+    // Multiple sequential messages on the same stream
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn sequential_messages_on_same_stream() {
+        let codec = mainnet_codec();
+        let messages: Vec<NetworkMessage> = vec![
+            NetworkMessage::Verack,
+            NetworkMessage::Ping(1),
+            NetworkMessage::Pong(1),
+            NetworkMessage::GetAddr,
+            NetworkMessage::SendHeaders,
+        ];
+
+        // Write all messages into a single buffer.
+        let mut buf: Vec<u8> = Vec::new();
+        for msg in &messages {
+            codec.write_message(&mut buf, msg.clone()).await.unwrap();
+        }
+
+        // Read them back one by one.
+        let mut reader = Cursor::new(buf);
+        let mut read_codec = mainnet_codec();
+        for expected in &messages {
+            let decoded = read_codec.read_message(&mut reader).await.unwrap();
+            assert_eq!(&decoded, expected);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Codec isolation: two codecs with different magic bytes
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn read_ignores_codec_magic_uses_wire_magic() {
+        // The read path does not validate the wire magic against the codec's
+        // own magic field. Verify that a codec configured for testnet can
+        // still successfully decode a message that was serialised with
+        // mainnet magic -- the codec's magic is only used for writing.
+        let write_codec = MessageCodec::new(Magic::BITCOIN);
+        let mut buf: Vec<u8> = Vec::new();
+        write_codec
+            .write_message(&mut buf, NetworkMessage::Verack)
+            .await
+            .unwrap();
+
+        let mut reader = Cursor::new(buf);
+        let mut read_codec = MessageCodec::new(Magic::TESTNET3);
+        let decoded = read_codec.read_message(&mut reader).await.unwrap();
+        assert_eq!(decoded, NetworkMessage::Verack);
+    }
+
+    #[tokio::test]
+    async fn write_uses_codec_magic() {
+        // A codec configured for testnet must embed testnet magic in the
+        // serialised bytes, not mainnet magic.
+        let codec = MessageCodec::new(Magic::TESTNET3);
+        let mut buf: Vec<u8> = Vec::new();
+        codec
+            .write_message(&mut buf, NetworkMessage::Verack)
+            .await
+            .unwrap();
+
+        assert_eq!(&buf[0..4], &Magic::TESTNET3.to_bytes());
+    }
+
+    // -----------------------------------------------------------------------
+    // MessageCodec::new initialisation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn codec_new_sets_magic() {
+        let codec = MessageCodec::new(Magic::SIGNET);
+        assert_eq!(codec.magic, Magic::SIGNET);
+    }
+
+    #[test]
+    fn codec_read_buf_starts_empty() {
+        let codec = mainnet_codec();
+        assert!(codec.read_buf.is_empty());
+    }
+}
