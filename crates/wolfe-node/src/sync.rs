@@ -6,16 +6,19 @@
 //! 3. Download and validate full blocks
 //! 4. Feed validated blocks to the wallet
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bitcoin::block::Header;
+use bitcoin::consensus::Encodable;
 use bitcoin::hashes::Hash;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::p2p::message_blockdata::{GetHeadersMessage, Inventory};
 use bitcoin::BlockHash;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
+use wolfe_consensus::ConsensusEngine;
 use wolfe_p2p::peer::PeerId;
 use wolfe_store::NodeStore;
 
@@ -64,6 +67,9 @@ impl SyncProgress {
     }
 }
 
+/// Maximum number of blocks to request in a single getdata batch.
+const BLOCK_DOWNLOAD_BATCH: usize = 16;
+
 /// The sync engine orchestrates header and block download from peers.
 pub struct SyncEngine {
     store: Arc<NodeStore>,
@@ -80,6 +86,14 @@ pub struct SyncEngine {
     tip_hash: BlockHash,
     /// Known genesis hash for the configured network.
     genesis_hash: BlockHash,
+    /// Consensus engine for full block validation (optional — not available in header-only mode).
+    consensus: Option<Arc<ConsensusEngine>>,
+    /// Height of the last fully validated block.
+    validated_height: u64,
+    /// Queue of block hashes we've requested but not yet received.
+    pending_blocks: VecDeque<BlockHash>,
+    /// Txids from the most recently validated block (for mempool cleanup).
+    last_confirmed_txids: Vec<bitcoin::Txid>,
 }
 
 impl SyncEngine {
@@ -124,7 +138,22 @@ impl SyncEngine {
             tip_height,
             tip_hash,
             genesis_hash,
+            consensus: None,
+            validated_height: 0,
+            pending_blocks: VecDeque::new(),
+            last_confirmed_txids: Vec::new(),
         }
+    }
+
+    /// Attach a consensus engine for full block validation.
+    pub fn set_consensus(&mut self, engine: Arc<ConsensusEngine>) {
+        // Check if the consensus engine already has blocks validated
+        let kernel_height = engine.chain_height();
+        if kernel_height > 0 {
+            self.validated_height = kernel_height as u64;
+            info!(kernel_height, "consensus engine has existing chain state");
+        }
+        self.consensus = Some(engine);
     }
 
     pub fn progress(&self) -> &SyncProgress {
@@ -139,6 +168,15 @@ impl SyncEngine {
         self.tip_hash
     }
 
+    pub fn validated_height(&self) -> u64 {
+        self.validated_height
+    }
+
+    /// Returns txids from the last validated block (for mempool cleanup).
+    pub fn take_confirmed_txids(&mut self) -> Vec<bitcoin::Txid> {
+        std::mem::take(&mut self.last_confirmed_txids)
+    }
+
     /// Handle a P2P message from a peer. Returns an optional response message.
     pub fn handle_message(
         &mut self,
@@ -148,10 +186,7 @@ impl SyncEngine {
         match msg {
             NetworkMessage::Headers(headers) => self.handle_headers(peer_id, headers),
             NetworkMessage::Inv(inv) => self.handle_inv(peer_id, inv),
-            NetworkMessage::Block(block) => {
-                self.handle_block(peer_id, block);
-                None
-            }
+            NetworkMessage::Block(block) => self.handle_block(peer_id, block),
             NetworkMessage::SendHeaders => {
                 // Peer prefers headers announcements — we always do.
                 debug!(peer = ?peer_id, "peer prefers headers announcements");
@@ -208,10 +243,17 @@ impl SyncEngine {
             // Empty headers response means we're caught up with this peer.
             if self.sync_peer == Some(peer_id) {
                 info!(height = self.tip_height, "header sync complete");
-                self.progress.state = SyncState::Synced;
                 self.progress
                     .headers_height
                     .store(self.tip_height, Ordering::Relaxed);
+
+                // Start block download if consensus engine is available
+                if self.consensus.is_some() && self.validated_height < self.tip_height {
+                    self.progress.state = SyncState::SyncingBlocks;
+                    return self.request_next_blocks(peer_id);
+                }
+
+                self.progress.state = SyncState::Synced;
             }
             return None;
         }
@@ -286,9 +328,21 @@ impl SyncEngine {
             return Some((peer_id, next_request));
         }
 
-        // Less than 2000 means we've caught up.
+        // Less than 2000 means we've caught up with headers.
         if self.sync_peer == Some(peer_id) {
             info!(height = self.tip_height, "header sync complete");
+
+            // If we have a consensus engine and blocks to download, start block sync
+            if self.consensus.is_some() && self.validated_height < self.tip_height {
+                self.progress.state = SyncState::SyncingBlocks;
+                info!(
+                    from = self.validated_height + 1,
+                    to = self.tip_height,
+                    "starting block download"
+                );
+                return self.request_next_blocks(peer_id);
+            }
+
             self.progress.state = SyncState::Synced;
         }
 
@@ -315,15 +369,131 @@ impl SyncEngine {
         None
     }
 
-    /// Handle a received full block.
-    fn handle_block(&mut self, _peer_id: PeerId, block: bitcoin::Block) {
+    /// Handle a received full block — validate via consensus engine.
+    fn handle_block(
+        &mut self,
+        peer_id: PeerId,
+        block: bitcoin::Block,
+    ) -> Option<(PeerId, NetworkMessage)> {
         let hash = block.block_hash();
         let txcount = block.txdata.len();
-        debug!(%hash, txcount, "received block");
 
-        // TODO: Validate block with consensus engine
-        // TODO: Feed to wallet via apply_block
-        // TODO: Remove confirmed txs from mempool
+        // Remove from pending queue
+        self.pending_blocks.retain(|h| *h != hash);
+
+        // Serialize the block for the consensus engine
+        let consensus_engine = match &self.consensus {
+            Some(engine) => engine.clone(),
+            None => {
+                debug!(%hash, txcount, "received block (no consensus engine)");
+                return None;
+            }
+        };
+
+        let mut block_bytes = Vec::new();
+        if let Err(e) = block.consensus_encode(&mut block_bytes) {
+            warn!(%hash, ?e, "failed to serialize block");
+            return None;
+        }
+
+        // Validate through libbitcoinkernel
+        match consensus_engine.validate_block(&block_bytes) {
+            Ok(wolfe_consensus::ProcessBlockResult::NewBlock) => {
+                self.validated_height += 1;
+                self.progress
+                    .blocks_height
+                    .store(self.validated_height, Ordering::Relaxed);
+
+                // Collect txids for mempool cleanup
+                self.last_confirmed_txids =
+                    block.txdata.iter().map(|tx| tx.compute_txid()).collect();
+
+                if self.validated_height % 1_000 == 0 {
+                    info!(
+                        height = self.validated_height,
+                        headers = self.tip_height,
+                        txcount,
+                        "block validated"
+                    );
+                } else {
+                    debug!(height = self.validated_height, %hash, txcount, "block validated");
+                }
+            }
+            Ok(wolfe_consensus::ProcessBlockResult::Duplicate) => {
+                debug!(%hash, "block already known to consensus engine");
+                self.validated_height += 1;
+            }
+            Ok(wolfe_consensus::ProcessBlockResult::Rejected) => {
+                error!(%hash, "block REJECTED by consensus engine");
+                // Don't advance validated_height — this is a serious error
+                return None;
+            }
+            Err(e) => {
+                error!(%hash, ?e, "consensus engine error processing block");
+                return None;
+            }
+        }
+
+        // Request more blocks if we're still catching up
+        if self.validated_height < self.tip_height && self.pending_blocks.is_empty() {
+            return self.request_next_blocks(peer_id);
+        }
+
+        // Check if we're fully synced
+        if self.validated_height >= self.tip_height {
+            info!(
+                height = self.validated_height,
+                "block sync complete — fully validated"
+            );
+            self.progress.state = SyncState::Synced;
+        }
+
+        None
+    }
+
+    /// Build a getdata message for the next batch of blocks to download.
+    fn request_next_blocks(&mut self, peer_id: PeerId) -> Option<(PeerId, NetworkMessage)> {
+        let start = self.validated_height + 1;
+        let end = std::cmp::min(start + BLOCK_DOWNLOAD_BATCH as u64, self.tip_height + 1);
+
+        if start > self.tip_height {
+            return None;
+        }
+
+        let read_txn = match self.store.read_txn() {
+            Ok(txn) => txn,
+            Err(e) => {
+                warn!(?e, "failed to open read txn for block request");
+                return None;
+            }
+        };
+
+        let mut inventory = Vec::new();
+        for height in start..end {
+            match wolfe_store::HeaderStore::get_by_height(&read_txn, height as u32) {
+                Ok(Some(stored)) => {
+                    inventory.push(Inventory::Block(stored.hash));
+                    self.pending_blocks.push_back(stored.hash);
+                }
+                _ => {
+                    warn!(height, "missing header for block request");
+                    break;
+                }
+            }
+        }
+
+        if inventory.is_empty() {
+            return None;
+        }
+
+        debug!(
+            from = start,
+            to = end - 1,
+            count = inventory.len(),
+            "requesting blocks"
+        );
+
+        Some((peer_id, NetworkMessage::GetData(inventory)))
     }
 
     /// Build a getheaders message starting from our current tip.

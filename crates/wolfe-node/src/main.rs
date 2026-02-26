@@ -152,9 +152,40 @@ async fn main() -> Result<()> {
         });
     }
 
+    // ── Initialize consensus engine ─────────────────────────────────────
+    let consensus_engine = {
+        let chain_type = wolfe_consensus::chain_type_from_network(network);
+        let kernel_dir = data_dir.join("kernel");
+        match wolfe_consensus::ConsensusEngine::new(&kernel_dir, chain_type) {
+            Ok(engine) => {
+                let height = engine.chain_height();
+                info!(
+                    kernel_height = height,
+                    chain = ?chain_type,
+                    "consensus engine initialized"
+                );
+                Some(Arc::new(engine))
+            }
+            Err(e) => {
+                warn!(
+                    ?e,
+                    "consensus engine failed to initialize — running in header-only mode"
+                );
+                None
+            }
+        }
+    };
+
     // ── Initialize sync engine ──────────────────────────────────────────
     let mut sync_engine = SyncEngine::new(store.clone(), network, shutdown.clone());
-    info!(tip = sync_engine.tip_height(), "sync engine initialized");
+    if let Some(ref engine) = consensus_engine {
+        sync_engine.set_consensus(engine.clone());
+    }
+    info!(
+        headers = sync_engine.tip_height(),
+        validated = sync_engine.validated_height(),
+        "sync engine initialized"
+    );
 
     // ── Initialize RPC server ───────────────────────────────────────────
     let rpc_state = Arc::new(NodeState::new(
@@ -197,6 +228,7 @@ async fn main() -> Result<()> {
 
     // ── Progress reporter ───────────────────────────────────────────────
     let progress_headers = sync_engine.progress().headers_height.clone();
+    let progress_blocks = sync_engine.progress().blocks_height.clone();
     let progress_peers = sync_engine.progress().peer_count.clone();
     let progress_shutdown = shutdown.clone();
     tokio::spawn(async move {
@@ -207,9 +239,10 @@ async fn main() -> Result<()> {
                 break;
             }
             let h = progress_headers.load(Ordering::Relaxed);
+            let b = progress_blocks.load(Ordering::Relaxed);
             let p = progress_peers.load(Ordering::Relaxed);
             if h > 0 {
-                info!(headers = h, peers = p, "sync progress");
+                info!(headers = h, blocks = b, peers = p, "sync progress");
             }
         }
     });
@@ -279,6 +312,12 @@ async fn main() -> Result<()> {
                             let _ = peer_manager.send_to_peer(target_peer, response).await;
                         }
 
+                        // Remove confirmed txs from mempool
+                        let confirmed = sync_engine.take_confirmed_txids();
+                        if !confirmed.is_empty() {
+                            mempool.remove_for_block(&confirmed);
+                        }
+
                         // Update shared metrics
                         node_metrics.headers_height.store(
                             sync_engine.tip_height(),
@@ -313,8 +352,15 @@ async fn main() -> Result<()> {
     }
 
     // ── Graceful shutdown ───────────────────────────────────────────────
+    if let Some(ref engine) = consensus_engine {
+        if let Err(e) = engine.interrupt() {
+            warn!(?e, "failed to interrupt consensus engine");
+        }
+    }
+
     info!(
         headers = sync_engine.tip_height(),
+        validated = sync_engine.validated_height(),
         peers = peer_manager.peer_count(),
         "BitcoinWolfe shutting down"
     );
