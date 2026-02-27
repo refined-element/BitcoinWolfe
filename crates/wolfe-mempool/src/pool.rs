@@ -53,8 +53,42 @@ impl Mempool {
         // Run policy checks
         self.policy.check(&tx)?;
 
-        let fee_rate = self.policy.fee_rate_sat_per_vb(&tx, fee);
-        self.policy.check_fee_rate(fee_rate)?;
+        // If fee is 0 (caller couldn't calculate), try to estimate from mempool parents.
+        // For transactions spending mempool parents, we can sum parent output values.
+        let effective_fee = if fee == 0 {
+            let mut input_sum = 0u64;
+            let mut all_inputs_resolved = true;
+            for input in &tx.input {
+                if let Some(parent) = self.entries.get(&input.previous_output.txid) {
+                    if let Some(output) = parent.tx.output.get(input.previous_output.vout as usize)
+                    {
+                        input_sum += output.value.to_sat();
+                    } else {
+                        all_inputs_resolved = false;
+                    }
+                } else {
+                    // Input references a confirmed UTXO we don't have access to
+                    all_inputs_resolved = false;
+                }
+            }
+
+            if all_inputs_resolved && input_sum > 0 {
+                let output_sum: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+                input_sum.saturating_sub(output_sum)
+            } else {
+                // Can't determine fee — skip fee rate check for relay txs
+                // (consensus engine will validate when the block is mined)
+                fee
+            }
+        } else {
+            fee
+        };
+
+        let fee_rate = self.policy.fee_rate_sat_per_vb(&tx, effective_fee);
+        // Only enforce fee rate if we have a real fee (either provided or estimated)
+        if fee > 0 || effective_fee > 0 {
+            self.policy.check_fee_rate(fee_rate)?;
+        }
 
         let size_vbytes = tx.weight().to_vbytes_ceil();
 
@@ -67,20 +101,59 @@ impl Mempool {
             });
         }
 
+        // Count in-mempool ancestors (transactions that this tx spends from)
+        let mut ancestor_count = 0usize;
+        for input in &tx.input {
+            if self.entries.contains_key(&input.previous_output.txid) {
+                ancestor_count += 1;
+                // Also count ancestors of ancestors (transitive)
+                if let Some(parent) = self.entries.get(&input.previous_output.txid) {
+                    ancestor_count += parent.ancestor_count;
+                }
+            }
+        }
+        let max_ancestors = self.policy.config().max_ancestors;
+        if ancestor_count > max_ancestors {
+            return Err(MempoolError::TooManyAncestors {
+                count: ancestor_count,
+                max: max_ancestors,
+            });
+        }
+
+        // Check descendant limits on parents we'd be spending from
+        let max_descendants = self.policy.config().max_descendants;
+        for input in &tx.input {
+            if let Some(parent) = self.entries.get(&input.previous_output.txid) {
+                if parent.descendant_count >= max_descendants {
+                    return Err(MempoolError::TooManyDescendants {
+                        count: parent.descendant_count + 1,
+                        max: max_descendants,
+                    });
+                }
+            }
+        }
+
         let entry = MempoolEntry {
-            tx,
+            tx: tx.clone(),
             txid,
-            fee,
+            fee: effective_fee,
             fee_rate,
             size_vbytes,
             added_at: Instant::now(),
-            ancestor_count: 0,
+            ancestor_count,
             descendant_count: 0,
         };
 
         self.entries.insert(txid, entry);
         self.total_bytes
             .fetch_add(size_vbytes as usize, Ordering::Relaxed);
+
+        // Increment descendant count on all parent entries
+        for input in &tx.input {
+            if let Some(mut parent) = self.entries.get_mut(&input.previous_output.txid) {
+                parent.descendant_count += 1;
+            }
+        }
 
         debug!(%txid, fee_rate = format!("{:.1}", fee_rate), "tx accepted into mempool");
         Ok(txid)
@@ -183,6 +256,36 @@ impl Mempool {
         if !expired.is_empty() {
             info!(count = expired.len(), "expired old mempool transactions");
         }
+    }
+
+    /// Total size of the mempool in bytes (alias for size_bytes).
+    pub fn total_bytes(&self) -> usize {
+        self.total_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Minimum fee rate configured for this mempool.
+    pub fn min_fee_rate(&self) -> f64 {
+        self.policy.config().min_fee_rate
+    }
+
+    /// Build a fee rate histogram: buckets of (fee_rate_sat_per_vb, tx_count).
+    /// Returns buckets in descending order of fee rate.
+    pub fn fee_histogram(&self) -> Vec<(f64, usize)> {
+        let boundaries = [500.0, 200.0, 100.0, 50.0, 20.0, 10.0, 5.0, 2.0, 1.0];
+        let mut buckets: Vec<(f64, usize)> = boundaries.iter().map(|&b| (b, 0)).collect();
+
+        for entry in self.entries.iter() {
+            for bucket in buckets.iter_mut() {
+                if entry.fee_rate >= bucket.0 {
+                    bucket.1 += 1;
+                    break;
+                }
+            }
+        }
+
+        // Only return non-empty buckets
+        buckets.retain(|b| b.1 > 0);
+        buckets
     }
 
     pub fn policy(&self) -> &PolicyEngine {

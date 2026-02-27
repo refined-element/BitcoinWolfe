@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::net::TcpListener;
 use tracing::{error, info};
 
 /// All node metrics, updated by various subsystems.
@@ -26,6 +25,10 @@ pub struct NodeMetrics {
     pub mempool_bytes: Arc<AtomicU64>,
     // RPC
     pub rpc_requests: Arc<AtomicU64>,
+    // Lightning
+    pub ln_channels_active: Arc<AtomicU64>,
+    pub ln_peers_connected: Arc<AtomicU64>,
+    pub ln_capacity_sat: Arc<AtomicU64>,
 }
 
 impl NodeMetrics {
@@ -44,6 +47,9 @@ impl NodeMetrics {
             mempool_txs: Arc::new(AtomicU64::new(0)),
             mempool_bytes: Arc::new(AtomicU64::new(0)),
             rpc_requests: Arc::new(AtomicU64::new(0)),
+            ln_channels_active: Arc::new(AtomicU64::new(0)),
+            ln_peers_connected: Arc::new(AtomicU64::new(0)),
+            ln_capacity_sat: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -119,13 +125,53 @@ impl NodeMetrics {
             self.rpc_requests.load(Ordering::Relaxed)
         ));
 
+        out.push_str("# HELP wolfe_ln_channels_active Active Lightning channels.\n");
+        out.push_str("# TYPE wolfe_ln_channels_active gauge\n");
+        out.push_str(&format!(
+            "wolfe_ln_channels_active {}\n\n",
+            self.ln_channels_active.load(Ordering::Relaxed)
+        ));
+
+        out.push_str("# HELP wolfe_ln_peers_connected Connected Lightning peers.\n");
+        out.push_str("# TYPE wolfe_ln_peers_connected gauge\n");
+        out.push_str(&format!(
+            "wolfe_ln_peers_connected {}\n\n",
+            self.ln_peers_connected.load(Ordering::Relaxed)
+        ));
+
+        out.push_str("# HELP wolfe_ln_capacity_sat Total Lightning channel capacity in satoshis.\n");
+        out.push_str("# TYPE wolfe_ln_capacity_sat gauge\n");
+        out.push_str(&format!(
+            "wolfe_ln_capacity_sat {}\n\n",
+            self.ln_capacity_sat.load(Ordering::Relaxed)
+        ));
+
         out
     }
 }
 
-/// Start a minimal HTTP server that serves /metrics for Prometheus scraping.
+/// Start an HTTP metrics server using axum for proper request handling.
 pub async fn serve_metrics(listen_addr: String, metrics: Arc<NodeMetrics>) {
-    let listener = match TcpListener::bind(&listen_addr).await {
+    use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::routing::get;
+    use axum::Router;
+
+    async fn metrics_handler(State(metrics): State<Arc<NodeMetrics>>) -> impl IntoResponse {
+        let body = metrics.render();
+        (
+            StatusCode::OK,
+            [("Content-Type", "text/plain; version=0.0.4; charset=utf-8")],
+            body,
+        )
+    }
+
+    let app = Router::new()
+        .route("/metrics", get(metrics_handler))
+        .with_state(metrics);
+
+    let listener = match tokio::net::TcpListener::bind(&listen_addr).await {
         Ok(l) => l,
         Err(e) => {
             error!(%listen_addr, ?e, "failed to bind metrics server");
@@ -135,23 +181,7 @@ pub async fn serve_metrics(listen_addr: String, metrics: Arc<NodeMetrics>) {
 
     info!(%listen_addr, "metrics server listening");
 
-    loop {
-        let (mut stream, _) = match listener.accept().await {
-            Ok(conn) => conn,
-            Err(e) => {
-                error!(?e, "metrics accept failed");
-                continue;
-            }
-        };
-
-        let body = metrics.render();
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(),
-            body
-        );
-
-        use tokio::io::AsyncWriteExt;
-        let _ = stream.write_all(response.as_bytes()).await;
+    if let Err(e) = axum::serve(listener, app).await {
+        error!(?e, "metrics server failed");
     }
 }

@@ -23,7 +23,14 @@ impl MessageCodec {
         }
     }
 
+    /// Maximum bytes to scan forward looking for magic before giving up.
+    const MAX_RESYNC_BYTES: usize = 1024 * 1024; // 1 MB
+
     /// Read the next P2P message from the stream.
+    ///
+    /// If the first 4 bytes don't match the expected network magic, scans
+    /// forward byte-by-byte to re-synchronize the stream. This handles rare
+    /// TCP framing issues during rapid block download (IBD).
     pub async fn read_message<R: AsyncRead + Unpin>(
         &mut self,
         reader: &mut R,
@@ -32,6 +39,64 @@ impl MessageCodec {
         // Magic(4) + Command(12) + Length(4) + Checksum(4)
         let mut header = [0u8; 24];
         reader.read_exact(&mut header).await?;
+
+        // Validate network magic bytes (first 4 bytes must match our network)
+        let expected = self.magic.to_bytes();
+        if header[0..4] != expected {
+            // Stream desync — scan forward to find the magic bytes.
+            // Shift the 24 bytes we already read into a sliding window and
+            // read one byte at a time until we find the magic sequence.
+            let mut window = header.to_vec();
+            let mut scanned = 0usize;
+
+            loop {
+                // Search for magic in the current window
+                if let Some(pos) = window
+                    .windows(4)
+                    .position(|w| w == expected)
+                {
+                    // Found magic at `pos`. We need bytes [pos..pos+24] as
+                    // the full header. We may already have some of them.
+                    let available = window.len() - pos;
+                    if available >= 24 {
+                        header.copy_from_slice(&window[pos..pos + 24]);
+                    } else {
+                        header[..available].copy_from_slice(&window[pos..]);
+                        reader.read_exact(&mut header[available..]).await?;
+                    }
+                    tracing::debug!(skipped_bytes = scanned + pos, "re-synced P2P stream");
+                    break;
+                }
+
+                scanned += window.len().saturating_sub(3);
+                if scanned > Self::MAX_RESYNC_BYTES {
+                    return Err(P2pError::InvalidMessage {
+                        addr: String::new(),
+                        reason: format!(
+                            "could not re-sync stream after scanning {} bytes",
+                            scanned
+                        ),
+                    });
+                }
+
+                // Keep last 3 bytes (magic could straddle the boundary) and
+                // read a fresh chunk.
+                let keep = window.len().min(3);
+                let tail: Vec<u8> = window[window.len() - keep..].to_vec();
+                window.clear();
+                window.extend_from_slice(&tail);
+
+                let mut chunk = [0u8; 512];
+                let n = reader.read(&mut chunk).await?;
+                if n == 0 {
+                    return Err(P2pError::Io(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "connection closed during stream re-sync",
+                    )));
+                }
+                window.extend_from_slice(&chunk[..n]);
+            }
+        }
 
         // Parse payload length from header bytes 16..20 (little-endian u32)
         let payload_len =
@@ -441,11 +506,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn read_ignores_codec_magic_uses_wire_magic() {
-        // The read path does not validate the wire magic against the codec's
-        // own magic field. Verify that a codec configured for testnet can
-        // still successfully decode a message that was serialised with
-        // mainnet magic -- the codec's magic is only used for writing.
+    async fn read_rejects_wrong_network_magic() {
+        // A codec configured for testnet must reject messages serialised
+        // with mainnet magic. The resync logic scans for testnet magic but
+        // the stream only contains mainnet bytes, so it hits EOF.
         let write_codec = MessageCodec::new(Magic::BITCOIN);
         let mut buf: Vec<u8> = Vec::new();
         write_codec
@@ -455,8 +519,8 @@ mod tests {
 
         let mut reader = Cursor::new(buf);
         let mut read_codec = MessageCodec::new(Magic::TESTNET3);
-        let decoded = read_codec.read_message(&mut reader).await.unwrap();
-        assert_eq!(decoded, NetworkMessage::Verack);
+        let result = read_codec.read_message(&mut reader).await;
+        assert!(result.is_err(), "should reject wrong network magic");
     }
 
     #[tokio::test]

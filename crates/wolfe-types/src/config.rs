@@ -13,6 +13,8 @@ pub struct Config {
     pub storage: StorageConfig,
     pub logging: LoggingConfig,
     pub metrics: MetricsConfig,
+    pub nostr: NostrConfig,
+    pub lightning: LightningConfig,
 }
 
 impl Default for Config {
@@ -26,6 +28,8 @@ impl Default for Config {
             storage: StorageConfig::default(),
             logging: LoggingConfig::default(),
             metrics: MetricsConfig::default(),
+            nostr: NostrConfig::default(),
+            lightning: LightningConfig::default(),
         }
     }
 }
@@ -66,14 +70,17 @@ impl Default for NetworkConfig {
 }
 
 impl NetworkConfig {
-    pub fn bitcoin_network(&self) -> bitcoin::Network {
+    pub fn bitcoin_network(&self) -> Result<bitcoin::Network, crate::WolfeError> {
         match self.chain.as_str() {
-            "mainnet" | "main" => bitcoin::Network::Bitcoin,
-            "testnet" | "testnet3" => bitcoin::Network::Testnet,
-            "testnet4" => bitcoin::Network::Testnet,
-            "signet" => bitcoin::Network::Signet,
-            "regtest" => bitcoin::Network::Regtest,
-            _ => bitcoin::Network::Bitcoin,
+            "mainnet" | "main" => Ok(bitcoin::Network::Bitcoin),
+            "testnet" | "testnet3" => Ok(bitcoin::Network::Testnet),
+            "testnet4" => Ok(bitcoin::Network::Testnet),
+            "signet" => Ok(bitcoin::Network::Signet),
+            "regtest" => Ok(bitcoin::Network::Regtest),
+            other => Err(crate::WolfeError::Config(format!(
+                "unknown network '{}'. Valid options: mainnet, testnet, testnet4, signet, regtest",
+                other
+            ))),
         }
     }
 }
@@ -95,6 +102,8 @@ pub struct P2pConfig {
     pub connect: Vec<String>,
     /// Ban duration in seconds for misbehaving peers.
     pub ban_duration_secs: u64,
+    /// Custom user-agent string (empty = use default).
+    pub user_agent: String,
 }
 
 impl Default for P2pConfig {
@@ -107,6 +116,7 @@ impl Default for P2pConfig {
             dns_seeds: vec![],
             connect: vec![],
             ban_duration_secs: 86400,
+            user_agent: String::new(),
         }
     }
 }
@@ -189,6 +199,11 @@ pub struct WalletConfig {
     pub external_descriptor: String,
     /// Internal (change) descriptor.
     pub internal_descriptor: String,
+    /// Encryption passphrase for the wallet database.
+    /// When set, the wallet database is encrypted at rest using SQLCipher.
+    /// Requires the node to be built with the `sqlcipher` feature.
+    /// WARNING: If you lose this passphrase, wallet data is irrecoverable.
+    pub encryption_key: Option<String>,
 }
 
 impl Default for WalletConfig {
@@ -198,6 +213,7 @@ impl Default for WalletConfig {
             db_path: "wallet.sqlite3".to_string(),
             external_descriptor: String::new(),
             internal_descriptor: String::new(),
+            encryption_key: None,
         }
     }
 }
@@ -271,6 +287,85 @@ impl Default for MetricsConfig {
         Self {
             enabled: true,
             listen: "127.0.0.1:9332".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NostrConfig {
+    /// Enable Nostr integration (block announcements, fee oracle, NIP-98 auth).
+    pub enabled: bool,
+    /// Nostr secret key (hex or nsec). If empty, an ephemeral key is generated.
+    pub secret_key: Option<String>,
+    /// Relay URLs to publish events to.
+    pub relays: Vec<String>,
+    /// Publish new block announcements to relays.
+    pub block_announcements: bool,
+    /// Publish mempool fee oracle events to relays.
+    pub fee_oracle: bool,
+    /// Fee oracle publishing interval in seconds.
+    pub fee_oracle_interval_secs: u64,
+    /// Enable NIP-98 HTTP Auth for RPC (alternative to Basic auth).
+    pub nip98_auth: bool,
+    /// Nostr public keys (hex or npub) allowed to authenticate via NIP-98.
+    /// If empty, any valid NIP-98 event is accepted.
+    pub allowed_pubkeys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LightningConfig {
+    /// Enable the embedded Lightning node.
+    pub enabled: bool,
+    /// TCP port for Lightning P2P connections.
+    pub listen_port: u16,
+    /// Node alias visible to the network.
+    pub alias: String,
+    /// Node color in hex (RGB).
+    pub color: String,
+    /// Addresses to announce for inbound connections.
+    pub announced_listen_addrs: Vec<String>,
+    /// Accept inbound channel open requests.
+    pub accept_inbound_channels: bool,
+    /// Minimum channel size in satoshis.
+    pub min_channel_size_sat: u64,
+    /// Maximum channel size in satoshis (wumbo = 16,777,215).
+    pub max_channel_size_sat: u64,
+    /// URL for Rapid Gossip Sync server (optional, speeds up initial gossip).
+    pub rapid_gossip_sync_url: Option<String>,
+}
+
+impl Default for LightningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen_port: 9735,
+            alias: "BitcoinWolfe".to_string(),
+            color: "ff9900".to_string(),
+            announced_listen_addrs: vec![],
+            accept_inbound_channels: true,
+            min_channel_size_sat: 20_000,
+            max_channel_size_sat: 16_777_215,
+            rapid_gossip_sync_url: None,
+        }
+    }
+}
+
+impl Default for NostrConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            secret_key: None,
+            relays: vec![
+                "wss://relay.damus.io".to_string(),
+                "wss://nos.lol".to_string(),
+            ],
+            block_announcements: true,
+            fee_oracle: true,
+            fee_oracle_interval_secs: 60,
+            nip98_auth: false,
+            allowed_pubkeys: vec![],
         }
     }
 }

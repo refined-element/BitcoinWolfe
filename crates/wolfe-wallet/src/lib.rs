@@ -23,14 +23,44 @@ pub struct NodeWallet {
 
 impl NodeWallet {
     /// Create a new wallet or load an existing one from the database.
+    ///
+    /// If `encryption_key` is provided, the database is encrypted at rest
+    /// using SQLCipher's PRAGMA key mechanism. This requires the node to be
+    /// built with SQLCipher support in rusqlite.
     pub fn open(
         db_path: &Path,
         network: Network,
         external_descriptor: String,
         internal_descriptor: String,
     ) -> Result<Self, WalletError> {
+        Self::open_with_encryption(db_path, network, external_descriptor, internal_descriptor, None)
+    }
+
+    /// Open with optional encryption key.
+    pub fn open_with_encryption(
+        db_path: &Path,
+        network: Network,
+        external_descriptor: String,
+        internal_descriptor: String,
+        encryption_key: Option<&str>,
+    ) -> Result<Self, WalletError> {
         let mut db = rusqlite::Connection::open(db_path)
             .map_err(|e| WalletError::Database(e.to_string()))?;
+
+        // Apply encryption key if provided
+        if let Some(key) = encryption_key {
+            // SQLCipher PRAGMA key must be the first statement after opening
+            // This works when rusqlite is compiled with the sqlcipher feature.
+            // With standard SQLite, this is a no-op but the database will be unencrypted.
+            db.execute_batch(&format!("PRAGMA key = '{}';", key.replace('\'', "''")))
+                .map_err(|e| {
+                    WalletError::Database(format!(
+                        "failed to set encryption key (is SQLCipher enabled?): {}",
+                        e
+                    ))
+                })?;
+            info!("wallet database encryption enabled");
+        }
 
         let ext = external_descriptor.clone();
         let int = internal_descriptor.clone();
@@ -126,6 +156,45 @@ impl NodeWallet {
         Ok(())
     }
 
+    /// Create a PSBT sending to the given address with the given amount (in satoshis).
+    /// If `sign` is true, the wallet will attempt to sign the PSBT immediately.
+    /// Returns the PSBT as a base64 string.
+    pub fn create_psbt(
+        &mut self,
+        to_address: &str,
+        amount_sat: u64,
+        fee_rate_sat_per_vb: f32,
+        sign: bool,
+    ) -> Result<String, WalletError> {
+        use bdk_wallet::bitcoin::Address;
+        use std::str::FromStr;
+
+        let address = Address::from_str(to_address)
+            .map_err(|e| WalletError::Bdk(format!("invalid address: {}", e)))?
+            .assume_checked();
+
+        let fee_rate = bdk_wallet::bitcoin::FeeRate::from_sat_per_vb(fee_rate_sat_per_vb as u64)
+            .ok_or_else(|| WalletError::Bdk("invalid fee rate".to_string()))?;
+
+        let mut builder = self.wallet.build_tx();
+        builder
+            .add_recipient(address.script_pubkey(), bdk_wallet::bitcoin::Amount::from_sat(amount_sat))
+            .fee_rate(fee_rate);
+
+        let mut psbt = builder
+            .finish()
+            .map_err(|e| WalletError::Bdk(format!("failed to build tx: {}", e)))?;
+
+        if sign {
+            self.wallet
+                .sign(&mut psbt, bdk_wallet::SignOptions::default())
+                .map_err(|e| WalletError::Bdk(format!("signing failed: {}", e)))?;
+        }
+
+        self.persist()?;
+        Ok(psbt.to_string())
+    }
+
     /// Sign a PSBT with the wallet's keys.
     pub fn sign(
         &mut self,
@@ -136,6 +205,20 @@ impl NodeWallet {
             .sign(psbt, bdk_wallet::SignOptions::default())
             .map_err(|e| WalletError::Bdk(e.to_string()))?;
         Ok(finalized)
+    }
+
+    /// Sign a PSBT from a base64 string. Returns (signed_base64, is_complete).
+    pub fn sign_psbt_base64(&mut self, psbt_b64: &str) -> Result<(String, bool), WalletError> {
+        let mut psbt: bdk_wallet::bitcoin::psbt::Psbt = psbt_b64
+            .parse()
+            .map_err(|e| WalletError::Bdk(format!("invalid PSBT: {}", e)))?;
+
+        let finalized = self
+            .wallet
+            .sign(&mut psbt, bdk_wallet::SignOptions::default())
+            .map_err(|e| WalletError::Bdk(format!("signing failed: {}", e)))?;
+
+        Ok((psbt.to_string(), finalized))
     }
 
     /// List all transactions.

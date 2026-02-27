@@ -8,6 +8,8 @@ members = [
     "crates/wolfe-wallet",
     "crates/wolfe-store",
     "crates/wolfe-types",
+    "crates/wolfe-nostr",
+    "crates/wolfe-lightning",
 ]
 resolver = "2"
 
@@ -21,13 +23,22 @@ description = "A modern Bitcoin full node built in Rust around libbitcoinkernel"
 [workspace.dependencies]
 # Bitcoin
 bitcoin = { version = "0.32", features = ["serde", "rand-std"] }
-bip324 = "0.5"
+bip324 = { version = "0.10", features = ["tokio"] }
 
 # Consensus (libbitcoinkernel bindings)
 bitcoinkernel = "0.2"
 
 # Wallet (BDK)
 bdk_wallet = { version = "1.1", features = ["rusqlite"] }
+
+# Nostr
+nostr-sdk = "0.39"
+
+# Lightning (LDK)
+lightning = "0.2"
+lightning-net-tokio = "0.2"
+lightning-background-processor = "0.2"
+lightning-rapid-gossip-sync = "0.2"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -61,6 +72,7 @@ thiserror = "2"
 anyhow = "1"
 
 # Misc
+base64 = "0.22"
 hex = "0.4"
 rand = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
@@ -76,3 +88,5 @@ wolfe-mempool = { path = "crates/wolfe-mempool" }
 wolfe-rpc = { path = "crates/wolfe-rpc" }
 wolfe-wallet = { path = "crates/wolfe-wallet" }
 wolfe-store = { path = "crates/wolfe-store" }
+wolfe-nostr = { path = "crates/wolfe-nostr" }
+wolfe-lightning = { path = "crates/wolfe-lightning" }

@@ -1,0 +1,27 @@
+[package]
+name = "wolfe-lightning"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lightning Network integration for BitcoinWolfe using LDK"
+
+[dependencies]
+# LDK
+lightning = { workspace = true }
+lightning-net-tokio = { workspace = true }
+lightning-background-processor = { workspace = true }
+lightning-rapid-gossip-sync = { workspace = true }
+
+# Internal crates
+wolfe-types = { workspace = true }
+wolfe-mempool = { workspace = true }
+wolfe-store = { workspace = true }
+
+# Workspace deps
+bitcoin = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+redb = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }

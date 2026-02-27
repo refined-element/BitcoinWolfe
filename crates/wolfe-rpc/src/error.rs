@@ -19,6 +19,9 @@ pub enum RpcError {
 
     #[error("wallet error: {0}")]
     Wallet(String),
+
+    #[error("lightning error: {0}")]
+    Lightning(String),
 }
 
 impl IntoResponse for RpcError {
@@ -29,6 +32,7 @@ impl IntoResponse for RpcError {
             RpcError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, -32603, m.clone()),
             RpcError::NotFound(m) => (StatusCode::NOT_FOUND, -1, m.clone()),
             RpcError::Wallet(m) => (StatusCode::INTERNAL_SERVER_ERROR, -4, m.clone()),
+            RpcError::Lightning(m) => (StatusCode::INTERNAL_SERVER_ERROR, -5, m.clone()),
         };
 
         let body = json!({

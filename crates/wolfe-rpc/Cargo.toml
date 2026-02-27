@@ -9,6 +9,9 @@ description = "REST and JSON-RPC API server for BitcoinWolfe"
 bitcoin = { workspace = true }
 wolfe-types = { workspace = true }
 wolfe-mempool = { workspace = true }
+wolfe-consensus = { workspace = true }
+wolfe-wallet = { workspace = true }
+wolfe-lightning = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
@@ -17,5 +20,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+base64 = { workspace = true }
 hex = { workspace = true }
 parking_lot = { workspace = true }
+wolfe-nostr = { workspace = true }
+nostr-sdk = { workspace = true }

@@ -78,6 +78,8 @@ pub struct PeerManager {
     event_tx: mpsc::Sender<PeerEvent>,
     event_rx: Option<mpsc::Receiver<PeerEvent>>,
     best_height: Arc<AtomicU64>,
+    /// Our version nonces, used to detect self-connections.
+    our_nonces: Arc<DashMap<u64, ()>>,
 }
 
 impl PeerManager {
@@ -92,6 +94,7 @@ impl PeerManager {
             event_tx,
             event_rx: Some(event_rx),
             best_height: Arc::new(AtomicU64::new(0)),
+            our_nonces: Arc::new(DashMap::new()),
         }
     }
 
@@ -138,13 +141,19 @@ impl PeerManager {
         });
 
         // Connect to manually specified peers
-        for addr_str in &self.config.connect {
-            if let Ok(addr) = addr_str.parse::<SocketAddr>() {
-                let this = self.clone();
-                tokio::spawn(async move {
-                    this.connect_outbound(addr).await;
-                });
-            }
+        let manual_addrs: Vec<SocketAddr> = self
+            .config
+            .connect
+            .iter()
+            .filter_map(|s| s.parse::<SocketAddr>().ok())
+            .collect();
+
+        for addr in &manual_addrs {
+            let this = self.clone();
+            let addr = *addr;
+            tokio::spawn(async move {
+                this.connect_outbound(addr).await;
+            });
         }
 
         // If no manual peers, try DNS seeds
@@ -152,6 +161,37 @@ impl PeerManager {
             let this = self.clone();
             tokio::spawn(async move {
                 this.discover_peers().await;
+            });
+        }
+
+        // Spawn reconnection loop for maintaining outbound peer count
+        {
+            let this = self.clone();
+            let manual_addrs = manual_addrs.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                loop {
+                    interval.tick().await;
+                    let outbound_count = this.peers.iter().filter(|p| !p.info.inbound).count();
+                    if outbound_count < this.config.max_outbound {
+                        let needed = this.config.max_outbound - outbound_count;
+                        debug!(outbound_count, needed, "reconnection: need more outbound peers");
+
+                        // Try manual peers first
+                        for addr in &manual_addrs {
+                            let already_connected = this.peers.iter().any(|p| p.info.addr == *addr);
+                            if !already_connected {
+                                this.connect_outbound(*addr).await;
+                            }
+                        }
+
+                        // If still short and no manual peers, re-discover via DNS
+                        let new_outbound = this.peers.iter().filter(|p| !p.info.inbound).count();
+                        if new_outbound < this.config.max_outbound && manual_addrs.is_empty() {
+                            this.discover_peers().await;
+                        }
+                    }
+                }
             });
         }
 
@@ -179,6 +219,7 @@ impl PeerManager {
             let peers = self.peers.clone();
             let peer_senders = self.peer_senders.clone();
 
+            let our_nonces = self.our_nonces.clone();
             tokio::spawn(async move {
                 match PeerConnection::accept(
                     stream,
@@ -191,6 +232,16 @@ impl PeerManager {
                 .await
                 {
                     Ok(mut conn) => {
+                        // Register our nonce for self-connection detection
+                        our_nonces.insert(conn.our_nonce, ());
+
+                        // Check for self-connection
+                        if our_nonces.contains_key(&conn.their_nonce) {
+                            info!(%addr, "detected self-connection (nonce match) — dropping");
+                            our_nonces.remove(&conn.our_nonce);
+                            return;
+                        }
+
                         let info = conn.info.clone();
                         let (msg_tx, msg_rx) = mpsc::channel(256);
                         peers.insert(peer_id, Peer::new(info.clone()));
@@ -199,6 +250,7 @@ impl PeerManager {
                         Self::run_peer_loop(&mut conn, msg_rx, &event_tx, &peers).await;
                         peer_senders.remove(&peer_id);
                         peers.remove(&peer_id);
+                        our_nonces.remove(&conn.our_nonce);
                         let _ = event_tx.send(PeerEvent::Disconnected(peer_id)).await;
                     }
                     Err(e) => {
@@ -229,6 +281,16 @@ impl PeerManager {
         .await
         {
             Ok(mut conn) => {
+                // Register our nonce for self-connection detection
+                self.our_nonces.insert(conn.our_nonce, ());
+
+                // Check for self-connection
+                if self.our_nonces.contains_key(&conn.their_nonce) {
+                    info!(%addr, "detected self-connection (nonce match) — dropping");
+                    self.our_nonces.remove(&conn.our_nonce);
+                    return;
+                }
+
                 let info = conn.info.clone();
                 let (msg_tx, msg_rx) = mpsc::channel(256);
                 self.peers.insert(peer_id, Peer::new(info.clone()));
@@ -238,10 +300,13 @@ impl PeerManager {
                 let event_tx = self.event_tx.clone();
                 let peers = self.peers.clone();
                 let peer_senders = self.peer_senders.clone();
+                let our_nonces = self.our_nonces.clone();
+                let our_nonce = conn.our_nonce;
                 tokio::spawn(async move {
                     Self::run_peer_loop(&mut conn, msg_rx, &event_tx, &peers).await;
                     peer_senders.remove(&peer_id);
                     peers.remove(&peer_id);
+                    our_nonces.remove(&our_nonce);
                     let _ = event_tx.send(PeerEvent::Disconnected(peer_id)).await;
                 });
             }
@@ -251,11 +316,30 @@ impl PeerManager {
         }
     }
 
+    /// Maximum time to wait for a message from a peer before considering
+    /// the connection stale. Matches Bitcoin Core's default timeout (~20 min).
+    const PEER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
+    /// Interval between keepalive pings (~2 min, matching Bitcoin Core).
+    const PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// If a ping response hasn't arrived within this time, consider the peer stale.
+    const PING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// Maximum *non-block* messages per second from a single peer.
+    ///
+    /// Block messages (which we explicitly requested via getdata) are exempt
+    /// because during IBD early blocks are tiny and arrive at 10k+ per second.
+    /// This limit only applies to unsolicited protocol messages (inv, addr,
+    /// headers, tx, etc.) to protect against flooding attacks.
+    const MAX_PROTOCOL_MESSAGES_PER_SEC: u32 = 2000;
+
     /// Main message loop for a single peer.
     ///
     /// Uses `tokio::select!` to concurrently:
     /// - Read inbound messages from the TCP stream and forward them to the node
     /// - Read outbound messages from the per-peer channel and write them to TCP
+    /// - Send periodic pings to detect stale peers
     async fn run_peer_loop(
         conn: &mut PeerConnection,
         mut outbound_rx: mpsc::Receiver<NetworkMessage>,
@@ -263,12 +347,51 @@ impl PeerManager {
         peers: &DashMap<PeerId, Peer>,
     ) {
         let peer_id = conn.info.id;
+        let mut ping_interval = tokio::time::interval(Self::PING_INTERVAL);
+        // Skip the first immediate tick
+        ping_interval.tick().await;
+
+        // Rate limiter for non-block protocol messages only.
+        // Block messages are exempt because we explicitly requested them and
+        // during IBD early blocks (height < 200k) are tiny, arriving at 10k+/sec.
+        let mut rate_window_start = std::time::Instant::now();
+        let mut rate_count: u32 = 0;
+
         loop {
             tokio::select! {
-                // Inbound: read a message from the peer over TCP
-                recv_result = conn.recv() => {
+                // Inbound: read a message from the peer over TCP (with timeout)
+                recv_result = tokio::time::timeout(Self::PEER_READ_TIMEOUT, conn.recv()) => {
+                let recv_result = match recv_result {
+                    Ok(inner) => inner,
+                    Err(_) => {
+                        info!(peer = ?peer_id, "peer timed out (no messages for 20 min)");
+                        break;
+                    }
+                };
                     match recv_result {
                         Ok(msg) => {
+                            // Rate limiting for non-block protocol messages.
+                            // Block and transaction messages are exempt since we
+                            // request them ourselves via getdata.
+                            let is_data_msg = matches!(
+                                &msg,
+                                NetworkMessage::Block(_)
+                                    | NetworkMessage::Tx(_)
+                                    | NetworkMessage::Headers(_)
+                            );
+
+                            if !is_data_msg {
+                                if rate_window_start.elapsed() >= std::time::Duration::from_secs(1) {
+                                    rate_window_start = std::time::Instant::now();
+                                    rate_count = 0;
+                                }
+                                rate_count += 1;
+                                if rate_count > Self::MAX_PROTOCOL_MESSAGES_PER_SEC {
+                                    warn!(peer = ?peer_id, rate = rate_count, "peer exceeding protocol message rate limit — disconnecting");
+                                    break;
+                                }
+                            }
+
                             // Update last-seen timestamp
                             if let Some(mut peer) = peers.get_mut(&peer_id) {
                                 peer.last_seen = std::time::Instant::now();
@@ -310,6 +433,13 @@ impl PeerManager {
                             info!(peer = ?peer_id, "peer disconnected");
                             break;
                         }
+                        Err(P2pError::Encode(_)) => {
+                            // Checksum or decode error — the message bytes were
+                            // already fully consumed from the stream so it's still
+                            // aligned for the next message. Skip and continue.
+                            debug!(peer = ?peer_id, "skipping corrupted message (checksum/decode error)");
+                            continue;
+                        }
                         Err(e) => {
                             warn!(peer = ?peer_id, ?e, "peer error");
                             break;
@@ -321,6 +451,29 @@ impl PeerManager {
                 Some(msg) = outbound_rx.recv() => {
                     if let Err(e) = conn.send(msg).await {
                         warn!(peer = ?peer_id, ?e, "failed to send message to peer");
+                        break;
+                    }
+                }
+
+                // Keepalive: send periodic pings
+                _ = ping_interval.tick() => {
+                    // Check if previous ping is still outstanding (stale peer)
+                    if let Some(peer) = peers.get(&peer_id) {
+                        if let Some(last_ping) = peer.last_ping {
+                            if peer.ping_nonce.is_some() && last_ping.elapsed() > Self::PING_TIMEOUT {
+                                info!(peer = ?peer_id, "peer failed to respond to ping — disconnecting");
+                                break;
+                            }
+                        }
+                    }
+
+                    let nonce: u64 = rand::random();
+                    if let Some(mut peer) = peers.get_mut(&peer_id) {
+                        peer.last_ping = Some(std::time::Instant::now());
+                        peer.ping_nonce = Some(nonce);
+                    }
+                    if let Err(e) = conn.send(NetworkMessage::Ping(nonce)).await {
+                        debug!(peer = ?peer_id, ?e, "failed to send ping");
                         break;
                     }
                 }

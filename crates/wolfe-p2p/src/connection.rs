@@ -4,7 +4,7 @@ use bitcoin::p2p::{address, ServiceFlags};
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::error::P2pError;
 use crate::message::{magic_for_network, MessageCodec};
@@ -13,6 +13,10 @@ use crate::peer::{PeerId, PeerInfo};
 /// Manages a single TCP connection to a Bitcoin peer.
 pub struct PeerConnection {
     pub info: PeerInfo,
+    /// The nonce we sent in our version message (for self-connection detection).
+    pub our_nonce: u64,
+    /// The nonce the remote peer sent in their version message.
+    pub their_nonce: u64,
     codec: MessageCodec,
     reader: tokio::io::ReadHalf<TcpStream>,
     writer: tokio::io::WriteHalf<TcpStream>,
@@ -50,6 +54,7 @@ impl PeerConnection {
 
         // Build and send our version message
         let version_msg = build_version_message(addr, our_services, our_best_height);
+        let our_nonce = version_msg.nonce;
         codec
             .write_message(&mut writer, NetworkMessage::Version(version_msg))
             .await?;
@@ -118,6 +123,8 @@ impl PeerConnection {
 
         Ok(Self {
             info,
+            our_nonce,
+            their_nonce: their_version.nonce,
             codec,
             reader,
             writer,
@@ -125,7 +132,28 @@ impl PeerConnection {
     }
 
     /// Accept an inbound connection and perform handshake.
+    /// The entire handshake is wrapped in a 10-second timeout to prevent
+    /// slowloris-style attacks that exhaust inbound connection slots.
     pub async fn accept(
+        stream: TcpStream,
+        addr: SocketAddr,
+        network: bitcoin::Network,
+        our_services: ServiceFlags,
+        our_best_height: i32,
+        peer_id: PeerId,
+    ) -> Result<Self, P2pError> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            Self::accept_inner(stream, addr, network, our_services, our_best_height, peer_id),
+        )
+        .await
+        .map_err(|_| P2pError::Handshake {
+            addr: addr.to_string(),
+            reason: "inbound handshake timed out".to_string(),
+        })?
+    }
+
+    async fn accept_inner(
         stream: TcpStream,
         addr: SocketAddr,
         network: bitcoin::Network,
@@ -150,6 +178,7 @@ impl PeerConnection {
 
         // Send our version
         let version_msg = build_version_message(addr, our_services, our_best_height);
+        let our_nonce = version_msg.nonce;
         codec
             .write_message(&mut writer, NetworkMessage::Version(version_msg))
             .await?;
@@ -190,6 +219,8 @@ impl PeerConnection {
 
         Ok(Self {
             info,
+            our_nonce,
+            their_nonce: their_version.nonce,
             codec,
             reader,
             writer,

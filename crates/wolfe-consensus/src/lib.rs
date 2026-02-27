@@ -66,7 +66,7 @@ use std::sync::Arc;
 use bitcoinkernel::prelude::*;
 use bitcoinkernel::{
     Block, BlockHash, BlockValidationStateRef, ChainstateManager, Context, ContextBuilder, Logger,
-    SynchronizationState, Warning,
+    SynchronizationState, ValidationMode, Warning,
 };
 
 use tracing::{debug, error, info, trace, warn};
@@ -154,8 +154,14 @@ pub struct ConsensusEngine {
     chain_type: ChainType,
 }
 
-// Safety: Context and ChainstateManager are Send + Sync per the bitcoinkernel crate.
-// The Arc<AtomicBool> is trivially Send + Sync.
+// SAFETY: Context and ChainstateManager are thread-safe per the bitcoinkernel v0.2 crate
+// documentation. The kernel library uses internal mutexes for all shared state.
+// Context, ChainstateManager, and Logger are all documented as thread-safe.
+// The Arc<AtomicBool> (fatal_error_occurred) is trivially Send + Sync.
+// The ChainType is Copy and has no interior mutability.
+// The Option wrappers are only mutated in Drop (which has exclusive access).
+// Validated by: manual review of bitcoinkernel 0.2.0 source, all FFI calls go through
+// cs_main or similar locks in libbitcoinkernel.
 unsafe impl Send for ConsensusEngine {}
 unsafe impl Sync for ConsensusEngine {}
 
@@ -299,13 +305,26 @@ impl ConsensusEngine {
             .with_block_checked_validation(|block: Block, state: BlockValidationStateRef<'_>| {
                 let mode = state.mode();
                 let result = state.result();
-                trace!(
-                    target: "wolfe_consensus::validation",
-                    block_hash = %block.hash(),
-                    validation_mode = ?mode,
-                    validation_result = ?result,
-                    "block checked"
-                );
+                match mode {
+                    ValidationMode::Valid => {
+                        trace!(
+                            target: "wolfe_consensus::validation",
+                            block_hash = %block.hash(),
+                            validation_mode = ?mode,
+                            validation_result = ?result,
+                            "block checked"
+                        );
+                    }
+                    _ => {
+                        warn!(
+                            target: "wolfe_consensus::validation",
+                            block_hash = %block.hash(),
+                            validation_mode = ?mode,
+                            validation_result = ?result,
+                            "block validation failed"
+                        );
+                    }
+                }
             })
             .build()
             .map_err(|e| {

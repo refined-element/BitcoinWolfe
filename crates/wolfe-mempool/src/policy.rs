@@ -17,8 +17,41 @@ impl PolicyEngine {
     /// Check if a transaction passes our policy rules.
     /// This does NOT check consensus validity — that's the kernel's job.
     pub fn check(&self, tx: &Transaction) -> Result<(), MempoolError> {
+        self.check_inputs(tx)?;
         self.check_datacarrier(tx)?;
         self.check_size(tx)?;
+        Ok(())
+    }
+
+    /// Structural validation of transaction inputs.
+    fn check_inputs(&self, tx: &Transaction) -> Result<(), MempoolError> {
+        // Reject transactions with no inputs (only coinbase is allowed and that goes through consensus)
+        if tx.input.is_empty() {
+            return Err(MempoolError::Rejected {
+                reason: "transaction has no inputs".to_string(),
+            });
+        }
+
+        // Reject coinbase transactions in the mempool
+        if tx.is_coinbase() {
+            return Err(MempoolError::Rejected {
+                reason: "coinbase transactions cannot be in the mempool".to_string(),
+            });
+        }
+
+        // Check for duplicate inputs (spending the same outpoint twice)
+        let mut seen = std::collections::HashSet::new();
+        for input in &tx.input {
+            if !seen.insert(input.previous_output) {
+                return Err(MempoolError::Rejected {
+                    reason: format!(
+                        "duplicate input: {}:{}",
+                        input.previous_output.txid, input.previous_output.vout
+                    ),
+                });
+            }
+        }
+
         Ok(())
     }
 
@@ -224,25 +257,6 @@ mod tests {
         }
     }
 
-    /// Create a transaction with distinct inputs so each call produces a
-    /// unique txid. `index` varies the prevout vout.
-    fn unique_tx(index: u32) -> Transaction {
-        Transaction {
-            version: Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: vec![TxIn {
-                previous_output: dummy_outpoint(index),
-                script_sig: ScriptBuf::new(),
-                sequence: Sequence::MAX,
-                witness: Witness::default(),
-            }],
-            output: vec![TxOut {
-                value: Amount::from_sat(50_000),
-                script_pubkey: ScriptBuf::new(),
-            }],
-        }
-    }
-
     // -----------------------------------------------------------------------
     // PolicyEngine::check -- normal transactions
     // -----------------------------------------------------------------------
@@ -332,17 +346,19 @@ mod tests {
 
     #[test]
     fn check_rejects_op_return_one_byte_over_limit() {
-        // Set limit so that 76 bytes data is exactly at the limit,
-        // then test with 77 bytes data which will be 1 byte over.
-        let script_len_at_76 = 1 + 1 + 76; // 78
-        let config = datacarrier_config(script_len_at_76);
+        // Measure actual script length for a 40-byte data payload, then
+        // set the limit to one byte less so the script exceeds it.
+        let tx = tx_with_op_return(40);
+        let actual_script_len = tx.output[1].script_pubkey.len();
+        let config = datacarrier_config(actual_script_len - 1);
         let engine = PolicyEngine::new(config);
-        // 77 bytes of data: script_len = 1 + 2 + 77 = 80
-        // (push prefix changes to OP_PUSHDATA1 + 1 byte len for data >= 76)
-        let tx = tx_with_op_return(77);
-        let script_len = tx.output[1].script_pubkey.len();
-        if script_len > script_len_at_76 {
-            assert!(engine.check(&tx).is_err());
+        let err = engine.check(&tx).unwrap_err();
+        match err {
+            MempoolError::DatacarrierTooLarge { size, max } => {
+                assert_eq!(size, actual_script_len);
+                assert_eq!(max, actual_script_len - 1);
+            }
+            other => panic!("expected DatacarrierTooLarge, got: {other:?}"),
         }
     }
 
