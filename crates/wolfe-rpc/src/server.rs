@@ -26,6 +26,7 @@ pub struct NodeState {
     peer_infos: parking_lot::RwLock<Vec<wolfe_types::PeerInfoSnapshot>>,
     pub started_at: Instant,
     best_height: AtomicU64,
+    headers_height: AtomicU64,
     best_hash: parking_lot::RwLock<String>,
     syncing: AtomicBool,
     shutdown: Option<Arc<AtomicBool>>,
@@ -42,6 +43,7 @@ impl NodeState {
             peer_infos: parking_lot::RwLock::new(Vec::new()),
             started_at: Instant::now(),
             best_height: AtomicU64::new(0),
+            headers_height: AtomicU64::new(0),
             best_hash: parking_lot::RwLock::new(String::new()),
             syncing: AtomicBool::new(true),
             shutdown: None,
@@ -96,6 +98,14 @@ impl NodeState {
         self.best_height.store(height, Ordering::Relaxed);
     }
 
+    pub fn headers_height(&self) -> u64 {
+        self.headers_height.load(Ordering::Relaxed)
+    }
+
+    pub fn set_headers_height(&self, height: u64) {
+        self.headers_height.store(height, Ordering::Relaxed);
+    }
+
     pub fn best_hash(&self) -> String {
         self.best_hash.read().clone()
     }
@@ -138,6 +148,7 @@ impl NodeState {
             "user_agent": wolfe_types::user_agent(),
             "chain": self.chain,
             "blocks": self.best_height(),
+            "headers": self.headers_height(),
             "best_block_hash": self.best_hash(),
             "mempool_size": self.mempool.len(),
             "peers": self.peer_count(),

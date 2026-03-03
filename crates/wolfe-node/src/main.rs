@@ -496,7 +496,11 @@ async fn main() -> Result<()> {
                         }
 
                         // Update RPC state with new peer
-                        rpc_state.set_best_height(sync_engine.tip_height());
+                        let best_h = consensus_engine
+                            .as_ref()
+                            .map(|e| e.chain_height().max(0) as u64)
+                            .unwrap_or(sync_engine.tip_height());
+                        rpc_state.set_best_height(best_h);
                         rpc_state.add_peer_info(wolfe_types::PeerInfoSnapshot {
                             addr: info.addr,
                             user_agent: info.user_agent.clone(),
@@ -647,8 +651,15 @@ async fn main() -> Result<()> {
                             );
                         }
 
-                        // Keep RPC state in sync
-                        rpc_state.set_best_height(sync_engine.tip_height());
+                        // Keep RPC state in sync — report kernel's actual
+                        // validated chain height, not the header tip which
+                        // resets on resync and misleads progress tracking.
+                        let best_h = consensus_engine
+                            .as_ref()
+                            .map(|e| e.chain_height().max(0) as u64)
+                            .unwrap_or(sync_engine.tip_height());
+                        rpc_state.set_best_height(best_h);
+                        rpc_state.set_headers_height(sync_engine.tip_height());
                         rpc_state.set_best_hash(sync_engine.tip_hash().to_string());
                         rpc_state.set_syncing(
                             sync_engine.progress().state != sync::SyncState::Synced
@@ -720,13 +731,18 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Delete the oldest blk*.dat / rev*.dat file pairs when total block storage
-/// exceeds the prune target. Keeps a minimum of 10 file pairs to avoid
-/// interfering with the kernel's active write file.
+/// Prune the oldest blk*.dat / rev*.dat files when total block storage
+/// exceeds the prune target. Files are **truncated to zero bytes** rather
+/// than deleted so that the kernel's block index (which still references
+/// them) passes its "all blk files present" startup check.
+///
+/// Keeps the newest 10 file pairs untouched to avoid interfering with
+/// the kernel's active write file.
 fn prune_block_files(blocks_dir: &std::path::Path, target_bytes: u64) -> Result<()> {
     use std::fs;
 
     // Collect blk*.dat files sorted by number (ascending = oldest first).
+    // Only count files with actual content (size > 0) toward the total.
     let mut blk_files: Vec<(u32, u64)> = Vec::new();
     let mut total_bytes: u64 = 0;
 
@@ -737,10 +753,12 @@ fn prune_block_files(blocks_dir: &std::path::Path, target_bytes: u64) -> Result<
         let size = entry.metadata()?.len();
         total_bytes += size;
 
-        // Match blk00000.dat pattern
+        // Match blk00000.dat pattern — skip already-pruned (0-byte) files.
         if name_str.starts_with("blk") && name_str.ends_with(".dat") {
             if let Ok(num) = name_str[3..name_str.len() - 4].parse::<u32>() {
-                blk_files.push((num, size));
+                if size > 0 {
+                    blk_files.push((num, size));
+                }
             }
         }
     }
@@ -751,7 +769,7 @@ fn prune_block_files(blocks_dir: &std::path::Path, target_bytes: u64) -> Result<
 
     blk_files.sort_by_key(|(num, _)| *num);
 
-    // Never delete the last 10 file pairs (kernel writes to the newest).
+    // Never prune the last 10 file pairs (kernel writes to the newest).
     let prunable = blk_files.len().saturating_sub(10);
     if prunable == 0 {
         return Ok(());
@@ -769,14 +787,19 @@ fn prune_block_files(blocks_dir: &std::path::Path, target_bytes: u64) -> Result<
         let blk_path = blocks_dir.join(format!("blk{:05}.dat", num));
         let rev_path = blocks_dir.join(format!("rev{:05}.dat", num));
 
+        // Truncate to zero bytes instead of deleting. This frees disk
+        // space while keeping the file entry for the kernel's block index.
         let mut pair_freed = 0u64;
         if blk_path.exists() {
             pair_freed += blk_size;
-            fs::remove_file(&blk_path)?;
+            fs::File::create(&blk_path)?; // truncates to 0 bytes
         }
         if rev_path.exists() {
-            pair_freed += rev_path.metadata().map(|m| m.len()).unwrap_or(0);
-            fs::remove_file(&rev_path)?;
+            let rev_size = rev_path.metadata().map(|m| m.len()).unwrap_or(0);
+            if rev_size > 0 {
+                pair_freed += rev_size;
+                fs::File::create(&rev_path)?; // truncates to 0 bytes
+            }
         }
 
         freed += pair_freed;

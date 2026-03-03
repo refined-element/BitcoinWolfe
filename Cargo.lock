@@ -3090,6 +3090,7 @@ dependencies = [
  "lightning-rapid-gossip-sync",
  "rand 0.8.5",
  "redb",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

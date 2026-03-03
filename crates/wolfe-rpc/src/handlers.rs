@@ -22,6 +22,7 @@ pub async fn get_blockchain(State(state): State<Arc<NodeState>>) -> Json<Value> 
     Json(json!({
         "chain": state.chain,
         "blocks": state.best_height(),
+        "headers": state.headers_height(),
         "best_block_hash": state.best_hash(),
         "syncing": state.is_syncing(),
     }))
@@ -174,6 +175,7 @@ async fn dispatch_rpc(
         "getblockchaininfo" => Ok(json!({
             "chain": state.chain,
             "blocks": state.best_height(),
+            "headers": state.headers_height(),
             "bestblockhash": state.best_hash(),
             "initialblockdownload": state.is_syncing(),
             "warnings": "",
