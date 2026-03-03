@@ -68,9 +68,9 @@ pub struct LightningManager {
     peer_manager: Arc<WolfePeerManager>,
     network_graph: Arc<WolfeNetworkGraph>,
     scorer: Arc<Mutex<WolfeScorer>>,
-    keys_manager: Arc<KeysManager>,
+    _keys_manager: Arc<KeysManager>,
     kv_store: Arc<WolfeKVStore>,
-    event_tx: mpsc::Sender<LightningEvent>,
+    _event_tx: mpsc::Sender<LightningEvent>,
     has_channels: AtomicBool,
 }
 
@@ -190,12 +190,18 @@ impl LightningManager {
         ));
 
         // ── Channel Manager ─────────────────────────────────────────────
-        let mut user_config = UserConfig::default();
-        user_config.accept_inbound_channels = config.accept_inbound_channels;
-        user_config.channel_handshake_limits.min_funding_satoshis = config.min_channel_size_sat;
-        user_config
-            .channel_handshake_config
-            .max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+        let user_config = UserConfig {
+            accept_inbound_channels: config.accept_inbound_channels,
+            channel_handshake_limits: lightning::util::config::ChannelHandshakeLimits {
+                min_funding_satoshis: config.min_channel_size_sat,
+                ..Default::default()
+            },
+            channel_handshake_config: lightning::util::config::ChannelHandshakeConfig {
+                max_inbound_htlc_value_in_flight_percent_of_channel: 100,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
         let channel_manager = load_or_create_channel_manager(
             &kv_store,
@@ -261,9 +267,9 @@ impl LightningManager {
                 peer_manager,
                 network_graph,
                 scorer,
-                keys_manager,
+                _keys_manager: keys_manager,
                 kv_store,
-                event_tx,
+                _event_tx: event_tx,
                 has_channels,
             },
             sender,
@@ -308,17 +314,12 @@ impl LightningManager {
     /// During IBD with no open channels, this is a fast no-op.
     pub fn block_connected(&self, block: &bitcoin::Block, height: u32) {
         // Skip during IBD if no channels exist (optimization)
-        if !self.has_channels.load(Ordering::Relaxed) && height % 10000 != 0 {
+        if !self.has_channels.load(Ordering::Relaxed) && !height.is_multiple_of(10000) {
             return;
         }
 
         let header = &block.header;
-        let txdata: Vec<_> = block
-            .txdata
-            .iter()
-            .enumerate()
-            .map(|(i, tx)| (i, tx))
-            .collect();
+        let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 
         self.channel_manager
             .transactions_confirmed(header, &txdata, height);
@@ -420,6 +421,7 @@ fn read_scorer(
 
 // ── Channel Manager load/create ─────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn load_or_create_channel_manager(
     kv_store: &Arc<WolfeKVStore>,
     keys_manager: Arc<KeysManager>,
@@ -535,6 +537,7 @@ fn load_or_create_channel_manager(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_fresh_channel_manager(
     keys_manager: Arc<KeysManager>,
     fee_estimator: Arc<WolfeFeeEstimator>,

@@ -155,8 +155,7 @@ impl NodeWallet {
             })
             .collect();
 
-        self.wallet
-            .apply_unconfirmed_txs(converted.into_iter().map(|(tx, ts)| (tx, ts)));
+        self.wallet.apply_unconfirmed_txs(converted);
 
         self.persist()?;
         Ok(())

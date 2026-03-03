@@ -545,7 +545,7 @@ async fn dispatch_rpc(
 
 // ─── Parameter extraction helpers ────────────────────────────────────────────
 
-fn get_param_str<'a>(params: Option<&'a Value>, index: usize) -> Option<&'a str> {
+fn get_param_str(params: Option<&Value>, index: usize) -> Option<&str> {
     params?.as_array()?.get(index)?.as_str()
 }
 

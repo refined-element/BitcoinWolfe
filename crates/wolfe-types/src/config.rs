@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Top-level configuration for a BitcoinWolfe node.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub network: NetworkConfig,
@@ -15,23 +15,6 @@ pub struct Config {
     pub metrics: MetricsConfig,
     pub nostr: NostrConfig,
     pub lightning: LightningConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            network: NetworkConfig::default(),
-            p2p: P2pConfig::default(),
-            rpc: RpcConfig::default(),
-            mempool: MempoolConfig::default(),
-            wallet: WalletConfig::default(),
-            storage: StorageConfig::default(),
-            logging: LoggingConfig::default(),
-            metrics: MetricsConfig::default(),
-            nostr: NostrConfig::default(),
-            lightning: LightningConfig::default(),
-        }
-    }
 }
 
 impl Config {

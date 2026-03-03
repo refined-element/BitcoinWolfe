@@ -107,7 +107,7 @@ impl V2Connection {
             .await
             .map_err(|e| P2pError::Connection {
                 addr: "v2".to_string(),
-                source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                source: std::io::Error::other(e.to_string()),
             })?;
         Ok(())
     }
@@ -120,7 +120,7 @@ impl V2Connection {
             .await
             .map_err(|e| P2pError::Connection {
                 addr: "v2".to_string(),
-                source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                source: std::io::Error::other(e.to_string()),
             })?;
 
         let contents = payload.contents();
@@ -132,7 +132,7 @@ impl V2Connection {
             });
         }
 
-        let msg: NetworkMessage = deserialize(&contents).map_err(|e| P2pError::Handshake {
+        let msg: NetworkMessage = deserialize(contents).map_err(|e| P2pError::Handshake {
             addr: "v2".to_string(),
             reason: format!("failed to deserialize v2 message: {}", e),
         })?;

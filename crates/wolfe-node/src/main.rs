@@ -385,7 +385,7 @@ async fn main() -> Result<()> {
     // and rev*.dat files when total block storage exceeds the target.
     // The UTXO set and block index are never pruned.
     if config.storage.prune_target_mb > 0 {
-        let prune_target_bytes = config.storage.prune_target_mb as u64 * 1024 * 1024;
+        let prune_target_bytes = config.storage.prune_target_mb * 1024 * 1024;
         let blocks_dir = data_dir.join("kernel").join("blocks");
         let prune_shutdown = shutdown.clone();
         info!(

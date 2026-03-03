@@ -614,7 +614,7 @@ impl ConsensusEngine {
     /// Returns [`ConsensusError`] if the interrupt signal could not be delivered.
     pub fn interrupt(&self) -> Result<(), ConsensusError> {
         if let Some(ref ctx) = self.context {
-            ctx.interrupt().map_err(|e| ConsensusError::Kernel(e))?;
+            ctx.interrupt().map_err(ConsensusError::Kernel)?;
             info!("kernel context interrupted");
         }
         Ok(())

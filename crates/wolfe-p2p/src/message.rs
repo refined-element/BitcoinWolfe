@@ -132,7 +132,7 @@ impl MessageCodec {
         let raw = RawNetworkMessage::new(self.magic, msg);
         let mut buf = Vec::new();
         raw.consensus_encode(&mut buf)
-            .map_err(|e| P2pError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            .map_err(|e| P2pError::Io(std::io::Error::other(e)))?;
 
         writer.write_all(&buf).await?;
         writer.flush().await?;

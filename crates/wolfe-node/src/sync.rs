@@ -53,7 +53,7 @@ pub struct SyncProgress {
     pub headers_height: Arc<AtomicU64>,
     pub blocks_height: Arc<AtomicU64>,
     pub peer_count: Arc<AtomicU64>,
-    pub headers_per_second: Arc<AtomicU64>,
+    pub _headers_per_second: Arc<AtomicU64>,
 }
 
 impl SyncProgress {
@@ -63,7 +63,7 @@ impl SyncProgress {
             headers_height: Arc::new(AtomicU64::new(0)),
             blocks_height: Arc::new(AtomicU64::new(0)),
             peer_count: Arc::new(AtomicU64::new(0)),
-            headers_per_second: Arc::new(AtomicU64::new(0)),
+            _headers_per_second: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -75,13 +75,13 @@ const BLOCK_DOWNLOAD_BATCH: usize = 128;
 /// The sync engine orchestrates header and block download from peers.
 pub struct SyncEngine {
     store: Arc<NodeStore>,
-    network: bitcoin::Network,
+    _network: bitcoin::Network,
     progress: SyncProgress,
-    shutdown: Arc<AtomicBool>,
+    _shutdown: Arc<AtomicBool>,
     /// The peer we're currently syncing headers from.
     sync_peer: Option<PeerId>,
     /// Headers we've received but haven't stored yet (batch buffer).
-    header_batch: Vec<(Header, u32)>,
+    _header_batch: Vec<(Header, u32)>,
     /// Our current best header height.
     tip_height: u64,
     /// Hash of our current tip (for chain continuity validation).
@@ -143,11 +143,11 @@ impl SyncEngine {
 
         Self {
             store,
-            network,
+            _network: network,
             progress: SyncProgress::new(),
-            shutdown,
+            _shutdown: shutdown,
             sync_peer: None,
-            header_batch: Vec::new(),
+            _header_batch: Vec::new(),
             tip_height,
             tip_hash,
             genesis_hash,
@@ -425,13 +425,12 @@ impl SyncEngine {
                     }
 
                     // Update in-memory state to fork point
-                    self.tip_height = fork_h as u64;
+                    self.tip_height = fork_h;
                     self.tip_hash = header.prev_blockhash;
                     if self.validated_height > self.tip_height {
                         self.validated_height = self.tip_height;
                     }
                     // Reset locals to match rewound state
-                    prev_hash = header.prev_blockhash;
                     next_height = self.tip_height + 1;
                     validated.clear();
                     // Now re-validate this header (it chains from the fork point)
@@ -484,9 +483,9 @@ impl SyncEngine {
 
         if stored > 0 {
             // Log progress periodically
-            if self.tip_height % 10_000 == 0 || count < 2000 {
+            if self.tip_height.is_multiple_of(10_000) || count < 2000 {
                 info!(height = self.tip_height, batch = stored, "syncing headers");
-            } else if self.tip_height % 1_000 == 0 {
+            } else if self.tip_height.is_multiple_of(1_000) {
                 debug!(height = self.tip_height, batch = stored, "syncing headers");
             }
         }
@@ -619,7 +618,7 @@ impl SyncEngine {
                 // Store block for wallet consumption
                 self.last_validated_block = Some((block, self.validated_height as u32));
 
-                if self.validated_height % 1_000 == 0 {
+                if self.validated_height.is_multiple_of(1_000) {
                     let ch = consensus_engine.chain_height() as u64;
                     info!(
                         height = self.validated_height,
@@ -861,13 +860,10 @@ impl SyncEngine {
                 .ok()
                 .flatten();
 
-            match (kernel_block, store_block) {
-                (Some(kb), Some(sb)) => {
-                    if kb.hash_hex == sb.hash.to_string() {
-                        return h;
-                    }
+            if let (Some(kb), Some(sb)) = (kernel_block, store_block) {
+                if kb.hash_hex == sb.hash.to_string() {
+                    return h;
                 }
-                _ => {}
             }
 
             // Don't search more than 1000 blocks back
@@ -914,11 +910,10 @@ impl SyncEngine {
 
         // Walk back through our chain with exponential steps
         loop {
-            match wolfe_store::HeaderStore::get_by_height(&read_txn, height as u32) {
-                Ok(Some(stored)) => {
-                    locator.push(stored.hash);
-                }
-                _ => {}
+            if let Ok(Some(stored)) =
+                wolfe_store::HeaderStore::get_by_height(&read_txn, height as u32)
+            {
+                locator.push(stored.hash);
             }
 
             if height == 0 {

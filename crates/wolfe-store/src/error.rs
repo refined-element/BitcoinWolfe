@@ -13,7 +13,7 @@ pub enum StoreError {
     Table(#[from] redb::TableError),
 
     #[error("redb transaction error: {0}")]
-    Transaction(#[from] redb::TransactionError),
+    Transaction(Box<redb::TransactionError>),
 
     #[error("redb commit error: {0}")]
     Commit(#[from] redb::CommitError),
@@ -38,6 +38,12 @@ pub enum StoreError {
 
     #[error("data corruption: {0}")]
     Corruption(String),
+}
+
+impl From<redb::TransactionError> for StoreError {
+    fn from(e: redb::TransactionError) -> Self {
+        StoreError::Transaction(Box::new(e))
+    }
 }
 
 /// Convenience Result type for the store crate.
