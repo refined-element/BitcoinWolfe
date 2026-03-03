@@ -294,9 +294,7 @@ impl SyncEngine {
             );
             self.sync_peer = Some(peer_id);
             self.progress.state = SyncState::SyncingBlocks;
-            return self
-                .request_next_blocks(peer_id)
-                .map(|(_pid, msg)| msg);
+            return self.request_next_blocks(peer_id).map(|(_pid, msg)| msg);
         }
 
         None
@@ -416,11 +414,10 @@ impl SyncEngine {
                         fork_h
                     );
                     // Rewind to fork point
-                    if let Err(e) = self.store.reorganize(
-                        self.tip_height as u32,
-                        fork_h as u32,
-                        &[],
-                    ) {
+                    if let Err(e) =
+                        self.store
+                            .reorganize(self.tip_height as u32, fork_h as u32, &[])
+                    {
                         error!(?e, "failed to execute reorg in store");
                         self.sync_peer = None;
                         self.progress.state = SyncState::WaitingForPeers;
@@ -557,7 +554,10 @@ impl SyncEngine {
         }
 
         if !tx_requests.is_empty() {
-            debug!(count = tx_requests.len(), "requesting announced transactions");
+            debug!(
+                count = tx_requests.len(),
+                "requesting announced transactions"
+            );
             return Some((peer_id, NetworkMessage::GetData(tx_requests)));
         }
 
@@ -649,12 +649,17 @@ impl SyncEngine {
                     .get_block_at_height(ch as u32)
                     .map(|b| b.hash_hex)
                     .unwrap_or_default();
-                let store_hash = self.store.read_txn().ok().and_then(|txn| {
-                    wolfe_store::HeaderStore::get_by_height(&txn, ch as u32)
-                        .ok()
-                        .flatten()
-                        .map(|h| h.hash.to_string())
-                }).unwrap_or_default();
+                let store_hash = self
+                    .store
+                    .read_txn()
+                    .ok()
+                    .and_then(|txn| {
+                        wolfe_store::HeaderStore::get_by_height(&txn, ch as u32)
+                            .ok()
+                            .flatten()
+                            .map(|h| h.hash.to_string())
+                    })
+                    .unwrap_or_default();
 
                 self.validated_height += 1;
                 warn!(
@@ -689,9 +694,9 @@ impl SyncEngine {
                     // new headers from getheaders will overwrite the wrong ones).
                     self.validated_height = common;
                     if let Ok(txn) = self.store.read_txn() {
-                        if let Ok(Some(stored)) = wolfe_store::HeaderStore::get_by_height(
-                            &txn, common as u32,
-                        ) {
+                        if let Ok(Some(stored)) =
+                            wolfe_store::HeaderStore::get_by_height(&txn, common as u32)
+                        {
                             self.tip_height = common;
                             self.tip_hash = stored.hash;
                         }
@@ -727,10 +732,7 @@ impl SyncEngine {
 
         // Check if we're fully synced
         if self.validated_height >= self.tip_height && ch >= self.tip_height {
-            info!(
-                height = ch,
-                "block sync complete — fully validated"
-            );
+            info!(height = ch, "block sync complete — fully validated");
             self.progress.state = SyncState::Synced;
         }
 
@@ -796,7 +798,11 @@ impl SyncEngine {
         match self.progress.state {
             SyncState::SyncingBlocks if !self.pending_blocks.is_empty() => {
                 let stuck_count = self.pending_blocks.len();
-                let ch = self.consensus.as_ref().map(|e| e.chain_height() as u64).unwrap_or(0);
+                let ch = self
+                    .consensus
+                    .as_ref()
+                    .map(|e| e.chain_height() as u64)
+                    .unwrap_or(0);
 
                 warn!(
                     stuck_count,
@@ -851,8 +857,9 @@ impl SyncEngine {
 
         for h in (0..=start_height).rev() {
             let kernel_block = engine.get_block_at_height(h as u32);
-            let store_block =
-                wolfe_store::HeaderStore::get_by_height(&read_txn, h as u32).ok().flatten();
+            let store_block = wolfe_store::HeaderStore::get_by_height(&read_txn, h as u32)
+                .ok()
+                .flatten();
 
             match (kernel_block, store_block) {
                 (Some(kb), Some(sb)) => {
@@ -878,7 +885,9 @@ impl SyncEngine {
         let read_txn = self.store.read_txn().ok()?;
         // Search backwards from our tip to find the hash
         for height in (0..=self.tip_height).rev() {
-            if let Ok(Some(stored)) = wolfe_store::HeaderStore::get_by_height(&read_txn, height as u32) {
+            if let Ok(Some(stored)) =
+                wolfe_store::HeaderStore::get_by_height(&read_txn, height as u32)
+            {
                 if stored.hash == prev_hash {
                     return Some(height);
                 }

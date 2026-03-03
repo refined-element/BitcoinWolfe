@@ -51,10 +51,7 @@ impl MessageCodec {
 
             loop {
                 // Search for magic in the current window
-                if let Some(pos) = window
-                    .windows(4)
-                    .position(|w| w == expected)
-                {
+                if let Some(pos) = window.windows(4).position(|w| w == expected) {
                     // Found magic at `pos`. We need bytes [pos..pos+24] as
                     // the full header. We may already have some of them.
                     let available = window.len() - pos;

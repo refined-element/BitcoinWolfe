@@ -103,7 +103,12 @@ impl LightningManager {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
-        let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos(), false));
+        let keys_manager = Arc::new(KeysManager::new(
+            &seed,
+            now.as_secs(),
+            now.subsec_nanos(),
+            false,
+        ));
 
         // ── Broadcaster ─────────────────────────────────────────────────
         let (broadcast_tx, broadcast_rx) = mpsc::unbounded_channel();
@@ -187,9 +192,7 @@ impl LightningManager {
         // ── Channel Manager ─────────────────────────────────────────────
         let mut user_config = UserConfig::default();
         user_config.accept_inbound_channels = config.accept_inbound_channels;
-        user_config
-            .channel_handshake_limits
-            .min_funding_satoshis = config.min_channel_size_sat;
+        user_config.channel_handshake_limits.min_funding_satoshis = config.min_channel_size_sat;
         user_config
             .channel_handshake_config
             .max_inbound_htlc_value_in_flight_percent_of_channel = 100;
@@ -365,10 +368,7 @@ impl LightningManager {
 
         // Persist channel manager
         let buf = self.channel_manager.encode();
-        if let Err(e) = self
-            .kv_store
-            .write("channel_manager", "", "manager", buf)
-        {
+        if let Err(e) = self.kv_store.write("channel_manager", "", "manager", buf) {
             warn!(?e, "failed to persist channel manager");
         }
 
@@ -455,8 +455,7 @@ fn load_or_create_channel_manager(
                                 lightning::sign::InMemorySigner,
                             >,
                         )>::read(
-                            &mut reader,
-                            (keys_manager.as_ref(), keys_manager.as_ref()),
+                            &mut reader, (keys_manager.as_ref(), keys_manager.as_ref())
                         ) {
                             Ok((_blockhash, monitor)) => {
                                 channel_monitors.push(monitor);
@@ -473,9 +472,7 @@ fn load_or_create_channel_manager(
             }
 
             let monitor_refs: Vec<
-                &lightning::chain::channelmonitor::ChannelMonitor<
-                    lightning::sign::InMemorySigner,
-                >,
+                &lightning::chain::channelmonitor::ChannelMonitor<lightning::sign::InMemorySigner>,
             > = channel_monitors.iter().collect();
 
             let read_args = ChannelManagerReadArgs::new(

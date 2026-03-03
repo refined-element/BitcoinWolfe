@@ -95,7 +95,10 @@ impl V2Connection {
     }
 
     /// Send a bitcoin network message over the encrypted channel.
-    pub async fn send(&mut self, msg: bitcoin::p2p::message::NetworkMessage) -> Result<(), P2pError> {
+    pub async fn send(
+        &mut self,
+        msg: bitcoin::p2p::message::NetworkMessage,
+    ) -> Result<(), P2pError> {
         // Convert bitcoin crate NetworkMessage to bip324 serialized form
         let bip324_msg = convert_to_bip324_msg(&msg);
         let serialized = serialize(bip324_msg);
@@ -111,12 +114,14 @@ impl V2Connection {
 
     /// Receive and decrypt a bitcoin network message.
     pub async fn recv(&mut self) -> Result<bitcoin::p2p::message::NetworkMessage, P2pError> {
-        let payload = self.protocol.read().await.map_err(|e| {
-            P2pError::Connection {
+        let payload = self
+            .protocol
+            .read()
+            .await
+            .map_err(|e| P2pError::Connection {
                 addr: "v2".to_string(),
                 source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            }
-        })?;
+            })?;
 
         let contents = payload.contents();
         if contents.is_empty() {
@@ -140,9 +145,7 @@ impl V2Connection {
 ///
 /// Both crates use the same underlying bitcoin crate types, so this is
 /// a zero-cost conversion using serialization.
-fn convert_to_bip324_msg(
-    msg: &bitcoin::p2p::message::NetworkMessage,
-) -> NetworkMessage {
+fn convert_to_bip324_msg(msg: &bitcoin::p2p::message::NetworkMessage) -> NetworkMessage {
     // The bip324 crate has its own NetworkMessage enum that mirrors bitcoin's.
     // We use raw consensus encoding as the bridge.
     match msg {
@@ -152,9 +155,10 @@ fn convert_to_bip324_msg(
         bitcoin::p2p::message::NetworkMessage::SendHeaders => NetworkMessage::SendHeaders,
         // For other messages, use the raw payload encoding
         other => {
-            let command: CommandString = other.cmd().try_into().unwrap_or_else(|_| {
-                "unknown\0\0\0\0\0".try_into().unwrap()
-            });
+            let command: CommandString = other
+                .cmd()
+                .try_into()
+                .unwrap_or_else(|_| "unknown\0\0\0\0\0".try_into().unwrap());
             let payload = bitcoin::consensus::serialize(other);
             NetworkMessage::Unknown { command, payload }
         }
@@ -162,9 +166,7 @@ fn convert_to_bip324_msg(
 }
 
 /// Convert from bip324's NetworkMessage to bitcoin crate's NetworkMessage.
-fn convert_from_bip324_msg(
-    msg: NetworkMessage,
-) -> bitcoin::p2p::message::NetworkMessage {
+fn convert_from_bip324_msg(msg: NetworkMessage) -> bitcoin::p2p::message::NetworkMessage {
     match msg {
         NetworkMessage::Ping(n) => bitcoin::p2p::message::NetworkMessage::Ping(n),
         NetworkMessage::Pong(n) => bitcoin::p2p::message::NetworkMessage::Pong(n),
@@ -185,10 +187,13 @@ pub async fn try_v2_connect(
     stream: TcpStream,
     network: bitcoin::Network,
 ) -> Result<V2Connection, P2pError> {
-    tokio::time::timeout(std::time::Duration::from_secs(5), V2Connection::connect(stream, network))
-        .await
-        .map_err(|_| P2pError::Handshake {
-            addr: "v2".to_string(),
-            reason: "v2 handshake timed out".to_string(),
-        })?
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        V2Connection::connect(stream, network),
+    )
+    .await
+    .map_err(|_| P2pError::Handshake {
+        addr: "v2".to_string(),
+        reason: "v2 handshake timed out".to_string(),
+    })?
 }

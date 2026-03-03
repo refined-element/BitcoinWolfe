@@ -39,12 +39,8 @@ fn read_missing_key_returns_not_found() {
 fn write_overwrites_existing() {
     let (_tmp, store) = setup();
 
-    store
-        .write("ns", "", "key1", b"first".to_vec())
-        .unwrap();
-    store
-        .write("ns", "", "key1", b"second".to_vec())
-        .unwrap();
+    store.write("ns", "", "key1", b"first".to_vec()).unwrap();
+    store.write("ns", "", "key1", b"second".to_vec()).unwrap();
 
     let result = store.read("ns", "", "key1").unwrap();
     assert_eq!(result, b"second");
@@ -54,9 +50,7 @@ fn write_overwrites_existing() {
 fn remove_deletes_key() {
     let (_tmp, store) = setup();
 
-    store
-        .write("ns", "sub", "key1", b"data".to_vec())
-        .unwrap();
+    store.write("ns", "sub", "key1", b"data".to_vec()).unwrap();
 
     store.remove("ns", "sub", "key1", false).unwrap();
 
@@ -97,15 +91,9 @@ fn list_returns_keys_in_namespace() {
 fn list_with_secondary_namespace() {
     let (_tmp, store) = setup();
 
-    store
-        .write("ns", "sub1", "key_a", b"a".to_vec())
-        .unwrap();
-    store
-        .write("ns", "sub1", "key_b", b"b".to_vec())
-        .unwrap();
-    store
-        .write("ns", "sub2", "key_c", b"c".to_vec())
-        .unwrap();
+    store.write("ns", "sub1", "key_a", b"a".to_vec()).unwrap();
+    store.write("ns", "sub1", "key_b", b"b".to_vec()).unwrap();
+    store.write("ns", "sub2", "key_c", b"c".to_vec()).unwrap();
 
     let mut keys = store.list("ns", "sub1").unwrap();
     keys.sort();
@@ -127,9 +115,7 @@ fn list_empty_namespace_returns_empty() {
 fn write_empty_data() {
     let (_tmp, store) = setup();
 
-    store
-        .write("ns", "", "empty", Vec::new())
-        .unwrap();
+    store.write("ns", "", "empty", Vec::new()).unwrap();
 
     let result = store.read("ns", "", "empty").unwrap();
     assert!(result.is_empty());
@@ -140,9 +126,7 @@ fn write_large_data() {
     let (_tmp, store) = setup();
     let data = vec![0xAB; 1_000_000]; // 1 MB
 
-    store
-        .write("ns", "", "big", data.clone())
-        .unwrap();
+    store.write("ns", "", "big", data.clone()).unwrap();
 
     let result = store.read("ns", "", "big").unwrap();
     assert_eq!(result.len(), 1_000_000);
@@ -176,12 +160,8 @@ fn persistence_across_store_instances() {
 fn list_after_remove() {
     let (_tmp, store) = setup();
 
-    store
-        .write("ns", "", "a", b"data_a".to_vec())
-        .unwrap();
-    store
-        .write("ns", "", "b", b"data_b".to_vec())
-        .unwrap();
+    store.write("ns", "", "a", b"data_a".to_vec()).unwrap();
+    store.write("ns", "", "b", b"data_b".to_vec()).unwrap();
 
     store.remove("ns", "", "a", false).unwrap();
 

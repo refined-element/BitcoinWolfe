@@ -75,25 +75,25 @@ pub type WolfeChannelManager = ChannelManager<
 
 // OnionMessenger<ES, NS, L, NL, MR, OMH, APH, DRH, CMH>
 pub type WolfeOnionMessenger = OnionMessenger<
-    Arc<KeysManager>,           // ES: EntropySource
-    Arc<KeysManager>,           // NS: NodeSigner
-    Arc<WolfeLogger>,           // L: Logger
-    Arc<WolfeChannelManager>,   // NL: NodeIdLookUp
-    Arc<WolfeMessageRouter>,    // MR: MessageRouter
-    Arc<WolfeChannelManager>,   // OMH: OffersMessageHandler
-    IgnoringMessageHandler,     // APH: AsyncPaymentsMessageHandler
-    IgnoringMessageHandler,     // DRH: DNSResolverMessageHandler
-    IgnoringMessageHandler,     // CMH: CustomOnionMessageHandler
+    Arc<KeysManager>,         // ES: EntropySource
+    Arc<KeysManager>,         // NS: NodeSigner
+    Arc<WolfeLogger>,         // L: Logger
+    Arc<WolfeChannelManager>, // NL: NodeIdLookUp
+    Arc<WolfeMessageRouter>,  // MR: MessageRouter
+    Arc<WolfeChannelManager>, // OMH: OffersMessageHandler
+    IgnoringMessageHandler,   // APH: AsyncPaymentsMessageHandler
+    IgnoringMessageHandler,   // DRH: DNSResolverMessageHandler
+    IgnoringMessageHandler,   // CMH: CustomOnionMessageHandler
 >;
 
 // PeerManager<Descriptor, CM, RM, OM, L, CMH, NS, SM>
 pub type WolfePeerManager = LdkPeerManager<
     lightning_net_tokio::SocketDescriptor,
-    Arc<WolfeChannelManager>,   // CM: ChannelMessageHandler
-    IgnoringMessageHandler,     // RM: RoutingMessageHandler
-    Arc<WolfeOnionMessenger>,   // OM: OnionMessageHandler
-    Arc<WolfeLogger>,           // L: Logger
-    IgnoringMessageHandler,     // CMH: CustomMessageHandler
-    Arc<KeysManager>,           // NS: NodeSigner
-    Arc<WolfeChainMonitor>,     // SM: SendOnlyMessageHandler
+    Arc<WolfeChannelManager>, // CM: ChannelMessageHandler
+    IgnoringMessageHandler,   // RM: RoutingMessageHandler
+    Arc<WolfeOnionMessenger>, // OM: OnionMessageHandler
+    Arc<WolfeLogger>,         // L: Logger
+    IgnoringMessageHandler,   // CMH: CustomMessageHandler
+    Arc<KeysManager>,         // NS: NodeSigner
+    Arc<WolfeChainMonitor>,   // SM: SendOnlyMessageHandler
 >;

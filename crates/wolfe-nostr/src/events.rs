@@ -21,22 +21,13 @@ pub fn block_announcement(
 
     EventBuilder::new(Kind::Custom(33333), content.to_string())
         .tag(Tag::identifier("block"))
-        .tag(Tag::custom(
-            TagKind::custom("t"),
-            vec!["bitcoin"],
-        ))
-        .tag(Tag::custom(
-            TagKind::custom("t"),
-            vec!["block"],
-        ))
+        .tag(Tag::custom(TagKind::custom("t"), vec!["bitcoin"]))
+        .tag(Tag::custom(TagKind::custom("t"), vec!["block"]))
         .tag(Tag::custom(
             TagKind::custom("height"),
             vec![&height.to_string()],
         ))
-        .tag(Tag::custom(
-            TagKind::custom("network"),
-            vec![network],
-        ))
+        .tag(Tag::custom(TagKind::custom("network"), vec![network]))
 }
 
 /// Build a mempool fee oracle event (kind 33334, parameterized replaceable).
@@ -68,20 +59,8 @@ pub fn mempool_fee_oracle(
 
     EventBuilder::new(Kind::Custom(33334), content.to_string())
         .tag(Tag::identifier("mempool-fees"))
-        .tag(Tag::custom(
-            TagKind::custom("t"),
-            vec!["bitcoin"],
-        ))
-        .tag(Tag::custom(
-            TagKind::custom("t"),
-            vec!["mempool"],
-        ))
-        .tag(Tag::custom(
-            TagKind::custom("t"),
-            vec!["fees"],
-        ))
-        .tag(Tag::custom(
-            TagKind::custom("network"),
-            vec![network],
-        ))
+        .tag(Tag::custom(TagKind::custom("t"), vec!["bitcoin"]))
+        .tag(Tag::custom(TagKind::custom("t"), vec!["mempool"]))
+        .tag(Tag::custom(TagKind::custom("t"), vec!["fees"]))
+        .tag(Tag::custom(TagKind::custom("network"), vec![network]))
 }

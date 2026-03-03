@@ -16,9 +16,7 @@ pub enum LightningEvent {
         fee_paid_msat: Option<u64>,
     },
     /// A payment we sent failed.
-    PaymentFailed {
-        payment_hash: String,
-    },
+    PaymentFailed { payment_hash: String },
     /// A channel was opened.
     ChannelOpened {
         channel_id: String,
@@ -26,17 +24,11 @@ pub enum LightningEvent {
         capacity_sat: u64,
     },
     /// A channel was closed.
-    ChannelClosed {
-        channel_id: String,
-        reason: String,
-    },
+    ChannelClosed { channel_id: String, reason: String },
 }
 
 /// Handle LDK events. Called by the background processor.
-pub async fn handle_ldk_event(
-    event: Event,
-    event_tx: &mpsc::Sender<LightningEvent>,
-) {
+pub async fn handle_ldk_event(event: Event, event_tx: &mpsc::Sender<LightningEvent>) {
     match event {
         Event::FundingGenerationReady {
             temporary_channel_id,
@@ -70,7 +62,9 @@ pub async fn handle_ldk_event(
 
             // Auto-claim for known invoices
             match purpose {
-                PaymentPurpose::Bolt11InvoicePayment { payment_preimage, .. } => {
+                PaymentPurpose::Bolt11InvoicePayment {
+                    payment_preimage, ..
+                } => {
                     if let Some(preimage) = payment_preimage {
                         debug!(hash = %payment_hash, "auto-claiming with known preimage");
                         // The actual claim happens via channel_manager.claim_funds()
@@ -136,7 +130,10 @@ pub async fn handle_ldk_event(
                 .await;
         }
 
-        Event::SpendableOutputs { outputs, channel_id } => {
+        Event::SpendableOutputs {
+            outputs,
+            channel_id,
+        } => {
             // TODO: Sweep spendable outputs to wallet
             info!(
                 count = outputs.len(),
@@ -158,9 +155,7 @@ pub async fn handle_ldk_event(
         }
 
         Event::ChannelClosed {
-            channel_id,
-            reason,
-            ..
+            channel_id, reason, ..
         } => {
             let reason_str = format!("{:?}", reason);
             info!(

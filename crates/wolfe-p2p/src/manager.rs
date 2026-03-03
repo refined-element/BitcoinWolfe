@@ -175,7 +175,10 @@ impl PeerManager {
                     let outbound_count = this.peers.iter().filter(|p| !p.info.inbound).count();
                     if outbound_count < this.config.max_outbound {
                         let needed = this.config.max_outbound - outbound_count;
-                        debug!(outbound_count, needed, "reconnection: need more outbound peers");
+                        debug!(
+                            outbound_count,
+                            needed, "reconnection: need more outbound peers"
+                        );
 
                         // Try manual peers first
                         for addr in &manual_addrs {

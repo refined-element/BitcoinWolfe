@@ -63,14 +63,10 @@ impl FeeEstimator for WolfeFeeEstimator {
             ConfirmationTarget::ChannelCloseMinimum => self.sample_fee_rate_sat_per_vb(0.9),
 
             // Minimum mempool fee
-            ConfirmationTarget::MinAllowedAnchorChannelRemoteFee => {
-                self.mempool.min_fee_rate()
-            }
+            ConfirmationTarget::MinAllowedAnchorChannelRemoteFee => self.mempool.min_fee_rate(),
 
             // Non-exhaustive: default to minimum
-            ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee => {
-                self.mempool.min_fee_rate()
-            }
+            ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee => self.mempool.min_fee_rate(),
 
             // Output spending: medium-low priority
             ConfirmationTarget::OutputSpendingFee => self.sample_fee_rate_sat_per_vb(0.6),

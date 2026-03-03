@@ -144,7 +144,14 @@ impl PeerConnection {
     ) -> Result<Self, P2pError> {
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            Self::accept_inner(stream, addr, network, our_services, our_best_height, peer_id),
+            Self::accept_inner(
+                stream,
+                addr,
+                network,
+                our_services,
+                our_best_height,
+                peer_id,
+            ),
         )
         .await
         .map_err(|_| P2pError::Handshake {

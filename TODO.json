@@ -1,0 +1,997 @@
+{
+  "project": "BitcoinWolfe",
+  "version": "0.1.0",
+  "created": "2026-02-26",
+  "last_updated": "2026-02-26",
+  "summary": {
+    "total_items": 38,
+    "completed": 38,
+    "in_progress": 0,
+    "pending": 0
+  },
+  "categories": {
+    "critical_security": "Must fix before any deployment or public testing",
+    "missing_features_critical": "Core Bitcoin node functionality that is completely absent",
+    "high_priority": "Important for correctness and resilience",
+    "medium_priority": "Needed for production-quality node",
+    "lower_priority": "Nice-to-have improvements and hardening"
+  },
+  "items": [
+    {
+      "id": "SEC-001",
+      "category": "critical_security",
+      "priority": 1,
+      "title": "Remove hardcoded testnet private key",
+      "description": "A full testnet extended private key (tprv8ZgxMBicQKsPd7Uf69XL1XwhmjXhN7PBhGCAGrmcVgRN5nMSDxpmkZawt2CBrDDmFQchqid4LR) is hardcoded in main.rs lines 199-206, split across a format!() call. Any user who enables the wallet without providing descriptors shares this key. Since the repo is public on GitHub, anyone can sweep funds.",
+      "file": "crates/wolfe-node/src/main.rs",
+      "lines": "199-206",
+      "cvss": "9.8",
+      "cwe": "CWE-798",
+      "done_criteria": [
+        "Hardcoded tprv key is completely removed from source code",
+        "Wallet refuses to start if no descriptors are provided in config",
+        "Clear error message tells user to provide external_descriptor and internal_descriptor",
+        "No private key material exists anywhere in the repository (grep -r 'tprv' returns nothing)",
+        "Optional: wallet can generate a fresh random descriptor on first run and persist it"
+      ],
+      "testing_and_validation": [
+        "Run 'grep -rn tprv crates/' and confirm zero matches",
+        "Run 'grep -rn xprv crates/' and confirm zero matches in non-test code",
+        "Start node with wallet.enabled=true and empty descriptors \u2014 must fail with descriptive error",
+        "Start node with wallet.enabled=true and valid descriptors \u2014 must succeed",
+        "Start node with wallet.enabled=false \u2014 must succeed without any descriptor requirement",
+        "Run 'git log -p | grep tprv' to confirm key is not in any future commits"
+      ],
+      "complete": true
+    },
+    {
+      "id": "SEC-002",
+      "category": "critical_security",
+      "priority": 1,
+      "title": "Implement RPC authentication",
+      "description": "The RPC server config defines user/password fields but they are never checked. Every endpoint (including stop, getpeerinfo, getmempoolinfo) is accessible to any TCP client with no authentication. Default config has rpc.enabled=true.",
+      "file": "crates/wolfe-rpc/src/server.rs",
+      "lines": "110-137",
+      "cvss": "9.1",
+      "cwe": "CWE-306",
+      "done_criteria": [
+        "Axum middleware layer checks HTTP Basic auth on every RPC request",
+        "If config has user/password set, all requests without valid credentials get 401 Unauthorized",
+        "If config has no user/password, RPC server either refuses to start OR generates a random cookie file (like Bitcoin Core's .cookie)",
+        "Cookie file is written with restrictive permissions (0600)",
+        "Auth is checked before any handler logic executes"
+      ],
+      "testing_and_validation": [
+        "Send RPC request without auth header \u2014 must get 401",
+        "Send RPC request with wrong credentials \u2014 must get 401",
+        "Send RPC request with correct credentials \u2014 must get 200 with valid response",
+        "Test cookie-based auth flow if implemented",
+        "Verify no RPC method is reachable without authentication",
+        "Unit test: auth middleware rejects missing/invalid/valid credentials",
+        "Integration test: full RPC call with auth header"
+      ],
+      "complete": true
+    },
+    {
+      "id": "SEC-003",
+      "category": "critical_security",
+      "priority": 1,
+      "title": "Fix CORS to use configured origins",
+      "description": "When CORS origins are configured, the code applies CorsLayer::permissive() instead of using the actual configured origin list. This allows ANY website to make cross-origin RPC calls to a local node, exfiltrating peer lists and node state via JavaScript.",
+      "file": "crates/wolfe-rpc/src/server.rs",
+      "lines": "125-127",
+      "cvss": "7.0",
+      "cwe": "CWE-942",
+      "done_criteria": [
+        "CorsLayer uses the actual origins from config.cors_origins",
+        "Only listed origins can make cross-origin requests",
+        "If cors_origins is empty, no CORS headers are added (deny all cross-origin)",
+        "Preflight OPTIONS requests are handled correctly for allowed origins"
+      ],
+      "testing_and_validation": [
+        "Send request with Origin header matching configured origin \u2014 CORS headers present",
+        "Send request with Origin header NOT in configured list \u2014 no CORS headers / request blocked",
+        "Send request with no cors_origins configured \u2014 no CORS headers added",
+        "Unit test: CORS layer construction from config origins",
+        "Test OPTIONS preflight returns correct Access-Control-Allow-Origin"
+      ],
+      "complete": true
+    },
+    {
+      "id": "SEC-004",
+      "category": "critical_security",
+      "priority": 1,
+      "title": "Add inbound P2P handshake timeout",
+      "description": "Outbound connections have a 10-second timeout but inbound accept() has NO timeout on the handshake. An attacker can open 125 TCP connections sending no data, exhausting all inbound slots permanently (slowloris attack).",
+      "file": "crates/wolfe-p2p/src/connection.rs",
+      "lines": "128-197",
+      "cvss": "7.5",
+      "cwe": "CWE-400",
+      "done_criteria": [
+        "Entire inbound handshake wrapped in tokio::time::timeout (10 seconds max)",
+        "Each individual message read within handshake also has a timeout",
+        "Connection is dropped cleanly if timeout expires",
+        "Timeout value is configurable or uses a sensible constant"
+      ],
+      "testing_and_validation": [
+        "Unit test: simulate slow client that sends no data \u2014 connection dropped after timeout",
+        "Unit test: simulate client that sends partial header (1 byte/sec) \u2014 connection dropped",
+        "Unit test: normal handshake within timeout \u2014 succeeds",
+        "Verify no resource leak on timeout (connection and socket properly closed)",
+        "Load test: open 200 connections sending no data \u2014 all timeout and free slots"
+      ],
+      "complete": true
+    },
+    {
+      "id": "SEC-005",
+      "category": "critical_security",
+      "priority": 1,
+      "title": "Fix validated_height increment for duplicate blocks",
+      "description": "When consensus engine reports a block as Duplicate, validated_height is incremented unconditionally. A malicious peer can re-send an already-validated block causing validated_height to jump past blocks that were never actually validated.",
+      "file": "crates/wolfe-node/src/sync.rs",
+      "lines": "433-435",
+      "cvss": "6.0",
+      "cwe": "CWE-682",
+      "done_criteria": [
+        "validated_height only increments on ProcessBlockResult::NewBlock",
+        "Duplicate blocks do not advance validated_height",
+        "OR: Duplicate blocks only advance height if the block hash matches expected block at validated_height+1",
+        "Rejected blocks trigger peer misbehavior scoring"
+      ],
+      "testing_and_validation": [
+        "Unit test: send same block twice \u2014 validated_height only increments once",
+        "Unit test: send block at wrong height as duplicate \u2014 validated_height does not change",
+        "Unit test: normal sequential blocks \u2014 validated_height increments correctly",
+        "Unit test: rejected block \u2014 validated_height unchanged, error logged"
+      ],
+      "complete": true
+    },
+    {
+      "id": "SEC-006",
+      "category": "critical_security",
+      "priority": 2,
+      "title": "Validate network magic bytes on P2P message read",
+      "description": "The read_message method does not validate that the 4-byte magic in bytes 0-3 matches the codec's configured network magic. A peer could send messages with wrong network magic that still decode successfully, enabling protocol confusion attacks.",
+      "file": "crates/wolfe-p2p/src/message.rs",
+      "lines": "27-62",
+      "cvss": "7.5",
+      "cwe": "CWE-345",
+      "done_criteria": [
+        "read_message extracts magic bytes from header and compares against codec's network magic",
+        "Mismatched magic causes immediate disconnect with error",
+        "Both inbound and outbound message reads perform this check"
+      ],
+      "testing_and_validation": [
+        "Unit test: message with correct magic \u2014 decodes successfully",
+        "Unit test: message with wrong magic \u2014 returns error",
+        "Unit test: message with testnet magic on mainnet codec \u2014 returns error",
+        "Existing message round-trip tests still pass"
+      ],
+      "complete": true
+    },
+    {
+      "id": "SEC-007",
+      "category": "critical_security",
+      "priority": 2,
+      "title": "Remove committed data/nodestore.redb from repository",
+      "description": "data/nodestore.redb was committed before the .gitignore rule was added. May contain sync state, peer information, or operational data that should not be public.",
+      "file": "data/nodestore.redb",
+      "cvss": "2.0",
+      "cwe": "CWE-200",
+      "done_criteria": [
+        "File removed from git tracking with 'git rm --cached data/nodestore.redb'",
+        ".gitignore rule confirmed to cover data/ directory",
+        "File does not appear in future git status"
+      ],
+      "testing_and_validation": [
+        "Run 'git ls-files data/' and confirm no files listed",
+        "Run 'git status' and confirm data/nodestore.redb is not tracked",
+        "Verify .gitignore contains 'data/' entry"
+      ],
+      "complete": true
+    },
+    {
+      "id": "FEAT-001",
+      "category": "missing_features_critical",
+      "priority": 3,
+      "title": "Implement transaction relay (inv/getdata/tx)",
+      "description": "Transaction relay is completely missing. The node cannot receive, validate, or forward unconfirmed transactions. No handling for inv messages with MSG_TX type, no getdata requests for transactions, no tx message processing. This is fundamental Bitcoin node functionality.",
+      "files": [
+        "crates/wolfe-node/src/sync.rs",
+        "crates/wolfe-p2p/src/message.rs"
+      ],
+      "done_criteria": [
+        "Node handles incoming inv messages with MSG_TX inventory type",
+        "Node sends getdata to request announced transactions it doesn't have",
+        "Node processes incoming tx messages and adds valid transactions to mempool",
+        "Node announces new mempool transactions to peers via inv",
+        "Node responds to getdata requests for transactions in its mempool",
+        "Invalid transactions are rejected with appropriate reason",
+        "Already-known transactions are not re-requested"
+      ],
+      "testing_and_validation": [
+        "Unit test: receive inv with tx hash, verify getdata is sent",
+        "Unit test: receive tx message, verify it's added to mempool (if valid policy)",
+        "Unit test: receive duplicate tx inv, verify no second getdata",
+        "Unit test: receive invalid tx, verify rejection and no relay",
+        "Integration test: two-node tx relay (peer A announces \u2192 node requests \u2192 node receives \u2192 node announces to peer B)",
+        "Verify mempool.len() increases after receiving valid tx",
+        "Verify node sends inv to other peers after accepting tx"
+      ],
+      "complete": true
+    },
+    {
+      "id": "FEAT-002",
+      "category": "missing_features_critical",
+      "priority": 3,
+      "title": "Implement key RPC methods (getblock, sendrawtransaction, getrawtransaction)",
+      "description": "Critical RPC methods for interacting with the node are not implemented. getblock is needed to retrieve block data, sendrawtransaction to submit transactions, and getrawtransaction to look up transaction details.",
+      "file": "crates/wolfe-rpc/src/handlers.rs",
+      "done_criteria": [
+        "getblock returns full block data (hex or JSON depending on verbosity param)",
+        "getblock with verbosity=0 returns raw hex",
+        "getblock with verbosity=1 returns decoded JSON with tx hashes",
+        "getblock with verbosity=2 returns decoded JSON with full tx details",
+        "sendrawtransaction accepts hex-encoded raw transaction, validates, adds to mempool, and relays",
+        "sendrawtransaction returns txid on success, error on failure",
+        "getrawtransaction returns raw tx hex or decoded JSON",
+        "All methods return proper JSON-RPC error codes on failure"
+      ],
+      "testing_and_validation": [
+        "Unit test: getblock with valid block hash returns correct data",
+        "Unit test: getblock with invalid hash returns JSON-RPC error",
+        "Unit test: getblock with different verbosity levels",
+        "Unit test: sendrawtransaction with valid tx returns txid",
+        "Unit test: sendrawtransaction with invalid tx returns error",
+        "Unit test: getrawtransaction with known txid returns data",
+        "Unit test: getrawtransaction with unknown txid returns error",
+        "Bitcoin Core compatibility: compare response format with Core's documentation"
+      ],
+      "complete": true
+    },
+    {
+      "id": "FEAT-003",
+      "category": "missing_features_critical",
+      "priority": 3,
+      "title": "Implement peer keepalive (ping/pong)",
+      "description": "No ping/pong messages are ever sent. The ping_nonce and last_ping fields exist in Peer struct but are never populated. Stale peers are never detected or evicted. Without keepalive, dead connections accumulate and waste slots.",
+      "files": [
+        "crates/wolfe-p2p/src/manager.rs",
+        "crates/wolfe-p2p/src/peer.rs"
+      ],
+      "done_criteria": [
+        "Node sends ping messages to each peer every 120 seconds (configurable)",
+        "Node records the nonce and timestamp of sent pings",
+        "Node processes incoming pong messages and matches nonce to outstanding ping",
+        "Ping round-trip time is recorded per peer",
+        "Peers that don't respond to ping within 20 minutes are disconnected",
+        "Node responds to incoming ping messages with matching pong",
+        "Peer.last_ping and Peer.ping_nonce fields are properly used"
+      ],
+      "testing_and_validation": [
+        "Unit test: ping sent after interval elapsed",
+        "Unit test: pong received with correct nonce updates RTT",
+        "Unit test: pong received with wrong nonce is ignored",
+        "Unit test: peer that doesn't pong within timeout is disconnected",
+        "Unit test: incoming ping gets matching pong response",
+        "Verify peers_connected metric decreases when stale peer is evicted",
+        "Integration test: connect two nodes, verify ping/pong exchange"
+      ],
+      "complete": true
+    },
+    {
+      "id": "FEAT-004",
+      "category": "missing_features_critical",
+      "priority": 3,
+      "title": "Implement peer ban enforcement",
+      "description": "PeerStore has a full ban management system and Peer has record_misbehavior() that returns true at score >= 100. But: listen_inbound never checks if IP is banned, record_misbehavior is never called anywhere, bans are logged but never enforced.",
+      "files": [
+        "crates/wolfe-p2p/src/manager.rs",
+        "crates/wolfe-p2p/src/peer.rs",
+        "crates/wolfe-store/src/peers.rs"
+      ],
+      "done_criteria": [
+        "listen_inbound checks PeerStore ban list before accepting connections",
+        "Banned IPs are rejected immediately at TCP accept",
+        "record_misbehavior() is called for: invalid headers, invalid blocks, protocol violations, message spam",
+        "When misbehavior score >= 100, peer is disconnected and IP is banned",
+        "Ban duration uses config.p2p.ban_duration_secs",
+        "Expired bans are cleared on lookup",
+        "PeerStore ban list is persisted across restarts"
+      ],
+      "testing_and_validation": [
+        "Unit test: banned IP rejected on inbound connection attempt",
+        "Unit test: misbehavior score accumulates across events",
+        "Unit test: score >= 100 triggers ban and disconnect",
+        "Unit test: expired ban allows reconnection",
+        "Unit test: ban persists across PeerStore reopen",
+        "Integration test: send invalid headers \u2192 peer gets banned \u2192 reconnect rejected"
+      ],
+      "complete": true
+    },
+    {
+      "id": "FEAT-005",
+      "category": "missing_features_critical",
+      "priority": 3,
+      "title": "Implement peer reconnection logic",
+      "description": "If peers disconnect, there is no automatic reconnection. The node relies entirely on initial DNS seed resolution and the configured connect list. Over time, the node may lose all peers with no way to recover without restart.",
+      "file": "crates/wolfe-p2p/src/manager.rs",
+      "done_criteria": [
+        "Background task periodically checks if outbound peer count < max_outbound",
+        "If below target, attempts to connect to known peers from PeerStore",
+        "Falls back to DNS seed re-resolution if PeerStore is exhausted",
+        "Implements exponential backoff for failed connection attempts",
+        "Respects ban list (does not reconnect to banned peers)",
+        "connect list peers are always retried on disconnect"
+      ],
+      "testing_and_validation": [
+        "Unit test: peer count drops below max_outbound \u2192 reconnection attempt triggered",
+        "Unit test: banned peer not retried",
+        "Unit test: exponential backoff increases delay after failures",
+        "Unit test: connect-list peer is retried immediately on disconnect",
+        "Integration test: disconnect all peers \u2192 node discovers new peers via DNS within 30s",
+        "Verify peer_count metric recovers after disconnect event"
+      ],
+      "complete": true
+    },
+    {
+      "id": "HIGH-001",
+      "category": "high_priority",
+      "priority": 4,
+      "title": "Add read timeout on established peer connections",
+      "description": "run_peer_loop reads messages via conn.recv() with no timeout. If a peer completes handshake then stops sending data, the connection slot is occupied indefinitely. Combined with no ping/pong, stale connections accumulate.",
+      "file": "crates/wolfe-p2p/src/manager.rs",
+      "lines": "259-329",
+      "cvss": "7.0",
+      "cwe": "CWE-400",
+      "done_criteria": [
+        "conn.recv() wrapped in tokio::time::timeout",
+        "Timeout duration matches ping interval (e.g., 20 minutes)",
+        "Timeout triggers disconnect and slot cleanup",
+        "Timeout resets on every successfully received message"
+      ],
+      "testing_and_validation": [
+        "Unit test: peer sends no messages for 20 min \u2192 disconnected",
+        "Unit test: peer sends messages regularly \u2192 stays connected",
+        "Unit test: timeout resets after each message",
+        "Verify connection slot is freed after timeout disconnect"
+      ],
+      "complete": true
+    },
+    {
+      "id": "HIGH-002",
+      "category": "high_priority",
+      "priority": 4,
+      "title": "Fix sync peer selection (unverified start_height, i32\u2192u64 cast)",
+      "description": "Sync peer is selected based solely on self-reported start_height from version message. A negative i32 start_height wraps to a huge u64 value, always winning selection. Any attacker advertising high height becomes the exclusive sync peer.",
+      "file": "crates/wolfe-node/src/sync.rs",
+      "lines": "208-231",
+      "cvss": "7.0",
+      "cwe": "CWE-807",
+      "done_criteria": [
+        "start_height validated as non-negative (reject or clamp negative values)",
+        "start_height validated against reasonable maximum (e.g., current_height + 52560 for ~1 year ahead)",
+        "Use safe integer conversion (i32::try_from or u32::try_from) instead of 'as' cast",
+        "Sync peer selection considers multiple candidates, not just first one that's taller",
+        "If sync peer sends invalid data, it is replaced by another peer"
+      ],
+      "testing_and_validation": [
+        "Unit test: peer with negative start_height is not selected as sync peer",
+        "Unit test: peer with unreasonably high start_height is not selected",
+        "Unit test: peer with valid start_height > tip is selected",
+        "Unit test: sync peer replaced after sending invalid headers",
+        "Unit test: no integer overflow or truncation in height comparisons"
+      ],
+      "complete": true
+    },
+    {
+      "id": "HIGH-003",
+      "category": "high_priority",
+      "priority": 4,
+      "title": "Implement multi-peer sync with cross-validation",
+      "description": "Entire sync depends on a single peer (sync_peer: Option<PeerId>). All headers and blocks come from one source. An attacker who becomes the sync peer controls the node's entire chain view. Bitcoin Core downloads from multiple peers and cross-validates.",
+      "file": "crates/wolfe-node/src/sync.rs",
+      "cvss": "7.0",
+      "cwe": "CWE-693",
+      "done_criteria": [
+        "Headers requested from at least 2-3 peers simultaneously",
+        "Headers from different peers are cross-validated (must agree on same chain)",
+        "Disagreeing peers are flagged and eventually banned",
+        "Block downloads distributed across multiple peers",
+        "Sync continues from other peers if one disconnects",
+        "Minimum cumulative proof-of-work threshold for accepting a headers chain"
+      ],
+      "testing_and_validation": [
+        "Unit test: headers from 2 peers agree \u2192 accepted",
+        "Unit test: headers from 2 peers disagree \u2192 both are re-requested from third peer",
+        "Unit test: single malicious peer cannot override honest majority",
+        "Unit test: sync peer disconnect \u2192 seamless failover to another peer",
+        "Unit test: blocks downloaded from multiple peers in parallel",
+        "Performance test: multi-peer sync faster than single-peer"
+      ],
+      "complete": true
+    },
+    {
+      "id": "HIGH-004",
+      "category": "high_priority",
+      "priority": 4,
+      "title": "Increase block download window",
+      "description": "Block download batch size is 16 (BLOCK_DOWNLOAD_BATCH constant) vs Bitcoin Core's 1024. This severely limits sync speed, especially on high-latency connections. Each batch requires a full round-trip before the next can begin.",
+      "file": "crates/wolfe-node/src/sync.rs",
+      "done_criteria": [
+        "Block download window increased to at least 128 (configurable)",
+        "Pipeline allows requesting next batch before current batch is fully received",
+        "Track in-flight block requests to avoid duplicate requests",
+        "Timeout and re-request blocks that are not delivered within reasonable time",
+        "Adjust batch size based on peer bandwidth and latency"
+      ],
+      "testing_and_validation": [
+        "Benchmark: sync speed with batch=16 vs batch=128",
+        "Unit test: pipeline sends next batch when partial completion reached",
+        "Unit test: timed-out blocks are re-requested from different peer",
+        "Unit test: no duplicate block requests for in-flight blocks",
+        "Verify memory usage stays bounded with larger window"
+      ],
+      "complete": true
+    },
+    {
+      "id": "HIGH-005",
+      "category": "high_priority",
+      "priority": 4,
+      "title": "Enable BIP324 encrypted transport",
+      "description": "wolfe-p2p has a bip324 module/crate but v2_transport is hardcoded to false. The README and info command claim BIP324 support. This is both a missing feature and misleading documentation.",
+      "files": [
+        "crates/wolfe-p2p/src/connection.rs",
+        "crates/wolfe-p2p/src/bip324.rs"
+      ],
+      "done_criteria": [
+        "BIP324 v2 handshake attempted when config.p2p.prefer_v2_transport is true",
+        "Graceful fallback to v1 if peer doesn't support v2",
+        "v2_transport flag accurately reflects actual transport negotiation result",
+        "Encrypted transport used for all messages after successful v2 handshake",
+        "v2 transport reported correctly in PeerInfo and RPC getpeerinfo"
+      ],
+      "testing_and_validation": [
+        "Unit test: v2 handshake with v2-capable peer succeeds",
+        "Unit test: v2 handshake with v1-only peer falls back gracefully",
+        "Unit test: messages encrypted/decrypted correctly over v2 transport",
+        "Unit test: v2_transport flag matches actual negotiation outcome",
+        "Integration test: connect to Bitcoin Core 28+ with v2 enabled"
+      ],
+      "complete": true
+    },
+    {
+      "id": "HIGH-006",
+      "category": "high_priority",
+      "priority": 4,
+      "title": "Wire PeerStore into runtime",
+      "description": "PeerStore exists with full CRUD operations for known peers, ban management, and address storage, but is never used at runtime. Peer addresses from addr messages are not stored. Known peers are not used for reconnection.",
+      "files": [
+        "crates/wolfe-store/src/peers.rs",
+        "crates/wolfe-p2p/src/manager.rs"
+      ],
+      "done_criteria": [
+        "Peer addresses from addr/addrv2 messages are stored in PeerStore",
+        "PeerStore queried for reconnection candidates when peer count is low",
+        "Ban list in PeerStore is checked on inbound connection accept",
+        "PeerStore persists across node restarts",
+        "getpeerinfo RPC includes data from PeerStore"
+      ],
+      "testing_and_validation": [
+        "Unit test: receive addr message \u2192 addresses stored in PeerStore",
+        "Unit test: reconnection logic queries PeerStore for candidates",
+        "Unit test: PeerStore data survives node restart",
+        "Integration test: learn peer via addr \u2192 restart node \u2192 reconnect to learned peer"
+      ],
+      "complete": true
+    },
+    {
+      "id": "HIGH-007",
+      "category": "high_priority",
+      "priority": 4,
+      "title": "Implement mempool UTXO input validation",
+      "description": "Mempool add() only performs policy checks (size, fee rate, datacarrier). It does not validate that transaction inputs exist in UTXO set, signatures are valid, or transactions are consensus-valid. Required before enabling TX relay.",
+      "file": "crates/wolfe-mempool/src/pool.rs",
+      "lines": "45-87",
+      "done_criteria": [
+        "Transaction inputs validated against UTXO set before mempool acceptance",
+        "Script/signature verification performed (via libbitcoinkernel or equivalent)",
+        "Double-spend attempts detected and rejected",
+        "Fee computed from actual inputs minus outputs (not caller-provided)",
+        "Coinbase transactions rejected from mempool",
+        "Transactions spending non-existent UTXOs rejected"
+      ],
+      "testing_and_validation": [
+        "Unit test: tx with valid inputs and signatures accepted",
+        "Unit test: tx spending non-existent UTXO rejected",
+        "Unit test: tx with invalid signature rejected",
+        "Unit test: double-spend tx rejected",
+        "Unit test: coinbase tx rejected from mempool",
+        "Unit test: fee correctly computed from UTXO lookup"
+      ],
+      "complete": true
+    },
+    {
+      "id": "HIGH-008",
+      "category": "high_priority",
+      "priority": 4,
+      "title": "Add P2P message rate limiting",
+      "description": "run_peer_loop forwards every received message with no rate limiting. A malicious peer can flood the node with valid but useless messages (thousands of inv, addr, or getheaders). No per-message-type throttling exists.",
+      "file": "crates/wolfe-p2p/src/manager.rs",
+      "lines": "266-318",
+      "cvss": "5.0",
+      "cwe": "CWE-770",
+      "done_criteria": [
+        "Per-peer message rate limit enforced (e.g., 1000 messages/minute)",
+        "Per-message-type rate limits (e.g., max 3 getheaders/minute, max 50 inv/second)",
+        "Peers exceeding rate limits get misbehavior score increase",
+        "Extreme flooding triggers immediate disconnect",
+        "Rate limits are configurable"
+      ],
+      "testing_and_validation": [
+        "Unit test: peer within rate limit \u2014 all messages processed",
+        "Unit test: peer exceeding global rate limit \u2014 disconnect triggered",
+        "Unit test: peer sending excessive inv \u2014 misbehavior score increases",
+        "Unit test: rate limits reset after time window",
+        "Load test: flood node with messages from one peer \u2014 node remains responsive to other peers"
+      ],
+      "complete": true
+    },
+    {
+      "id": "MED-001",
+      "category": "medium_priority",
+      "priority": 5,
+      "title": "Implement wallet RPC endpoints",
+      "description": "No wallet-related RPC methods exist. The wallet is initialized but users have no way to interact with it via RPC. Need getbalance, getnewaddress, listunspent, sendtoaddress, listtransactions at minimum.",
+      "files": [
+        "crates/wolfe-rpc/src/handlers.rs",
+        "crates/wolfe-rpc/src/server.rs"
+      ],
+      "done_criteria": [
+        "getbalance \u2014 returns confirmed and unconfirmed balance",
+        "getnewaddress \u2014 returns a fresh receiving address",
+        "listunspent \u2014 returns list of unspent outputs",
+        "sendtoaddress \u2014 creates, signs, and broadcasts a transaction (requires TX relay FEAT-001)",
+        "listtransactions \u2014 returns recent wallet transactions",
+        "All methods return proper JSON-RPC errors when wallet is disabled",
+        "Bitcoin Core-compatible response formats"
+      ],
+      "testing_and_validation": [
+        "Unit test: getbalance returns correct balance",
+        "Unit test: getnewaddress returns valid Bitcoin address for configured network",
+        "Unit test: listunspent returns correct UTXOs",
+        "Unit test: wallet-disabled node returns appropriate error for all wallet RPCs",
+        "Integration test: getnewaddress \u2192 fund \u2192 getbalance shows funds",
+        "Compare response format with Bitcoin Core documentation"
+      ],
+      "complete": true
+    },
+    {
+      "id": "MED-002",
+      "category": "medium_priority",
+      "priority": 5,
+      "title": "Implement PSBT creation in wallet",
+      "description": "NodeWallet has sign() for PSBTs but no way to create them. Users cannot construct transactions without PSBT creation support. This is essential for any wallet functionality.",
+      "file": "crates/wolfe-wallet/src/lib.rs",
+      "done_criteria": [
+        "create_psbt() method that builds a PSBT from recipient address and amount",
+        "Coin selection algorithm (BDK provides this)",
+        "Change output handling with internal descriptor",
+        "Fee estimation (manual fee rate or from mempool)",
+        "createrawtransaction-compatible RPC endpoint",
+        "walletcreatefundedpsbt-compatible RPC endpoint"
+      ],
+      "testing_and_validation": [
+        "Unit test: create PSBT with valid recipient and amount",
+        "Unit test: PSBT includes change output when needed",
+        "Unit test: PSBT fee matches requested fee rate",
+        "Unit test: insufficient funds returns error",
+        "Integration test: create PSBT \u2192 sign \u2192 broadcast (with TX relay)"
+      ],
+      "complete": true
+    },
+    {
+      "id": "MED-003",
+      "category": "medium_priority",
+      "priority": 5,
+      "title": "Wire apply_unconfirmed_txs to wallet",
+      "description": "NodeWallet has apply_unconfirmed_txs() method but it is never called. The wallet only sees confirmed blocks, missing unconfirmed transactions entirely. Wallet balance won't show pending transactions.",
+      "file": "crates/wolfe-node/src/main.rs",
+      "done_criteria": [
+        "When a new transaction enters the mempool, it's fed to wallet via apply_unconfirmed_txs()",
+        "Wallet balance reflects pending/unconfirmed transactions",
+        "When transactions are confirmed in a block, unconfirmed state is superseded",
+        "When transactions are evicted from mempool, wallet state is updated"
+      ],
+      "testing_and_validation": [
+        "Unit test: unconfirmed tx to wallet address shows as trusted_pending",
+        "Unit test: confirmed tx supersedes unconfirmed state",
+        "Unit test: evicted tx removed from wallet pending balance",
+        "Integration test: send tx \u2192 wallet shows pending \u2192 block confirms \u2192 wallet shows confirmed"
+      ],
+      "complete": true
+    },
+    {
+      "id": "MED-004",
+      "category": "medium_priority",
+      "priority": 5,
+      "title": "Implement reorg handling in sync engine",
+      "description": "NodeStore has full reorg support (remove_headers_above, etc.) but the sync engine has no reorg detection or handling. If the chain reorganizes, the node will get stuck or follow the wrong chain.",
+      "file": "crates/wolfe-node/src/sync.rs",
+      "done_criteria": [
+        "Detect when a peer sends headers that fork from our chain",
+        "Compare cumulative proof-of-work between competing chains",
+        "If new chain has more work: roll back to fork point, apply new chain",
+        "NodeStore headers rolled back via remove_headers_above()",
+        "Consensus engine chainstate updated to match reorg",
+        "Wallet notified of reorged blocks (unconfirm transactions)",
+        "Mempool re-accepts transactions from disconnected blocks"
+      ],
+      "testing_and_validation": [
+        "Unit test: detect fork at height N with competing chain",
+        "Unit test: reorg to chain with more cumulative PoW",
+        "Unit test: reject reorg to chain with less PoW",
+        "Unit test: rolled-back transactions return to mempool",
+        "Unit test: wallet balance updates correctly after reorg",
+        "Integration test: simulate 1-block reorg on regtest"
+      ],
+      "complete": true
+    },
+    {
+      "id": "MED-005",
+      "category": "medium_priority",
+      "priority": 5,
+      "title": "Implement block pruning",
+      "description": "StorageConfig has prune_target_mb field (0 = no pruning) but no pruning logic exists. For nodes with limited disk space, pruning old blocks while keeping recent ones and UTXO set is essential.",
+      "file": "crates/wolfe-store/src/lib.rs",
+      "done_criteria": [
+        "When prune_target_mb > 0, old block data is removed after validation",
+        "Keep at least 288 most recent blocks (Bitcoin Core minimum)",
+        "UTXO set and headers are never pruned",
+        "Pruned blocks cannot be served to peers (node signals NODE_NETWORK_LIMITED)",
+        "Disk usage stays within configured target",
+        "getblockchaininfo reports pruned=true and pruneheight"
+      ],
+      "testing_and_validation": [
+        "Unit test: blocks beyond threshold are pruned",
+        "Unit test: recent 288 blocks always retained",
+        "Unit test: headers not affected by pruning",
+        "Unit test: disk usage stays within target",
+        "Unit test: pruned node signals correct service bits"
+      ],
+      "complete": true
+    },
+    {
+      "id": "MED-006",
+      "category": "medium_priority",
+      "priority": 5,
+      "title": "Implement log file output and format config",
+      "description": "LoggingConfig has file and format fields but they are unused. format can be 'text' or 'json' but only text is ever used. file output is never configured.",
+      "file": "crates/wolfe-node/src/main.rs",
+      "lines": "102-109",
+      "done_criteria": [
+        "When config.logging.format == 'json', logs are output in structured JSON format",
+        "When config.logging.file is set, logs are written to the specified file",
+        "File logging works alongside stdout logging",
+        "Log rotation or max file size should be considered",
+        "tracing-subscriber configured based on config values"
+      ],
+      "testing_and_validation": [
+        "Manual test: set format=json, verify JSON log output",
+        "Manual test: set file path, verify logs appear in file",
+        "Manual test: verify stdout still works when file logging is enabled",
+        "Unit test: logging config parsing for all format options"
+      ],
+      "complete": true
+    },
+    {
+      "id": "MED-007",
+      "category": "medium_priority",
+      "priority": 5,
+      "title": "Fix peer metrics counters (underflow and inbound/outbound tracking)",
+      "description": "peers_connected can underflow (u64 wraps to MAX on disconnect without connect). peers_inbound and peers_outbound are incremented on connect but never decremented on disconnect.",
+      "file": "crates/wolfe-node/src/main.rs",
+      "lines": "314-343",
+      "cvss": "4.5",
+      "cwe": "CWE-191",
+      "done_criteria": [
+        "Use saturating_sub instead of fetch_sub for all peer counters",
+        "peers_inbound decremented on disconnect for inbound peers",
+        "peers_outbound decremented on disconnect for outbound peers",
+        "Track whether disconnecting peer was inbound/outbound (may need to store this in peer_addrs map)",
+        "Consider using peer_manager.peer_count() directly instead of separate counter"
+      ],
+      "testing_and_validation": [
+        "Unit test: disconnect without prior connect \u2014 counter stays at 0 (no underflow)",
+        "Unit test: inbound peer connect then disconnect \u2014 peers_inbound returns to 0",
+        "Unit test: outbound peer connect then disconnect \u2014 peers_outbound returns to 0",
+        "Verify Prometheus metrics show correct values after connect/disconnect cycle"
+      ],
+      "complete": true
+    },
+    {
+      "id": "MED-008",
+      "category": "medium_priority",
+      "priority": 5,
+      "title": "Fix integer type consistency for block heights",
+      "description": "The codebase mixes u64, u32, and i32 for block heights. Key dangerous casts: start_height (i32) as u64 wraps negatives; u64 as u32 silently truncates. Heights should use a consistent type with safe conversions.",
+      "files": [
+        "crates/wolfe-node/src/sync.rs",
+        "crates/wolfe-p2p/src/connection.rs"
+      ],
+      "cvss": "5.0",
+      "cwe": "CWE-681",
+      "done_criteria": [
+        "Standardize on u32 for block heights throughout the codebase (Bitcoin max ~4 billion blocks)",
+        "All 'as' casts for heights replaced with checked conversions (u32::try_from, etc.)",
+        "Negative start_height from peers treated as 0 or rejected",
+        "No silent truncation possible in any height conversion path"
+      ],
+      "testing_and_validation": [
+        "Grep for 'as u32' and 'as u64' in height-related code \u2014 confirm all are safe or replaced",
+        "Unit test: negative i32 start_height handled safely",
+        "Unit test: very large u64 height conversion to u32 returns error (not truncation)",
+        "All existing tests pass with new type-safe conversions"
+      ],
+      "complete": true
+    },
+    {
+      "id": "MED-009",
+      "category": "medium_priority",
+      "priority": 5,
+      "title": "Audit and fix unsafe Send/Sync on ConsensusEngine",
+      "description": "ConsensusEngine has 'unsafe impl Send' and 'unsafe impl Sync' with a comment claiming libbitcoinkernel types are thread-safe. This needs verification. ConsensusEngine is shared via Arc across threads.",
+      "file": "crates/wolfe-consensus/src/lib.rs",
+      "lines": "157-160",
+      "cvss": "5.5",
+      "cwe": "CWE-362",
+      "done_criteria": [
+        "Thread safety of bitcoinkernel crate verified against upstream documentation",
+        "If thread-safe: document evidence in code comment with reference to upstream source",
+        "If NOT thread-safe: wrap ChainstateManager in Mutex or RwLock",
+        "Concurrent access test that exercises validate_block from multiple threads simultaneously",
+        "No data races under ThreadSanitizer (TSAN)"
+      ],
+      "testing_and_validation": [
+        "Review bitcoinkernel crate source for Send/Sync implementations",
+        "Stress test: call validate_block concurrently from 4+ threads",
+        "Run with RUSTFLAGS='-Z sanitizer=thread' if possible",
+        "Integration test: concurrent RPC queries while block validation is running"
+      ],
+      "complete": true
+    },
+    {
+      "id": "MED-010",
+      "category": "medium_priority",
+      "priority": 5,
+      "title": "Fix metrics server (use proper HTTP, add connection limits)",
+      "description": "Metrics endpoint is a raw TCP handler that writes HTTP response without reading the request. No path matching, no method validation, no connection timeout, no concurrent connection limit. Vulnerable to file descriptor exhaustion.",
+      "file": "crates/wolfe-node/src/metrics.rs",
+      "lines": "127-157",
+      "cvss": "5.3",
+      "cwe": "CWE-444",
+      "done_criteria": [
+        "Use a proper HTTP server (axum or hyper) for metrics endpoint",
+        "Only respond to GET /metrics path",
+        "Return 404 for other paths",
+        "Set connection timeout",
+        "Limit concurrent connections",
+        "Properly close connections after response"
+      ],
+      "testing_and_validation": [
+        "Unit test: GET /metrics returns 200 with prometheus format",
+        "Unit test: GET /other returns 404",
+        "Unit test: POST /metrics returns 405",
+        "Load test: 1000 concurrent connections \u2014 server remains responsive",
+        "Verify metrics output format matches Prometheus text exposition format"
+      ],
+      "complete": true
+    },
+    {
+      "id": "MED-011",
+      "category": "medium_priority",
+      "priority": 5,
+      "title": "Implement stop RPC that actually shuts down the node",
+      "description": "The stop RPC method returns 'BitcoinWolfe server stopping' but doesn't actually stop anything. The method needs access to the shared shutdown AtomicBool to trigger graceful shutdown.",
+      "files": [
+        "crates/wolfe-rpc/src/handlers.rs",
+        "crates/wolfe-rpc/src/server.rs"
+      ],
+      "done_criteria": [
+        "stop RPC method triggers graceful shutdown via shared AtomicBool",
+        "Node performs same cleanup as Ctrl+C (consensus interrupt, progress save)",
+        "RPC server sends response before shutting down",
+        "stop requires authentication (depends on SEC-002)",
+        "Shutdown is logged"
+      ],
+      "testing_and_validation": [
+        "Integration test: call stop RPC \u2192 node exits cleanly",
+        "Verify response is sent before shutdown",
+        "Verify consensus engine is interrupted",
+        "Verify sync progress is saved",
+        "Test that unauthenticated stop request is rejected (after SEC-002)"
+      ],
+      "complete": true
+    },
+    {
+      "id": "LOW-001",
+      "category": "lower_priority",
+      "priority": 6,
+      "title": "Implement self-connection detection via version nonce",
+      "description": "Random nonce is generated in version message but incoming version nonces are never checked. The node can form connection loops to itself, wasting slots.",
+      "file": "crates/wolfe-p2p/src/connection.rs",
+      "lines": "224",
+      "cvss": "3.0",
+      "cwe": "CWE-284",
+      "done_criteria": [
+        "Store nonce used in outbound version messages",
+        "Check incoming version message nonce against stored outbound nonces",
+        "If nonce matches, disconnect immediately (self-connection detected)",
+        "Log self-connection detection at warn level"
+      ],
+      "testing_and_validation": [
+        "Unit test: version with matching nonce triggers disconnect",
+        "Unit test: version with different nonce proceeds normally",
+        "Unit test: multiple outbound nonces tracked correctly"
+      ],
+      "complete": true
+    },
+    {
+      "id": "LOW-002",
+      "category": "lower_priority",
+      "priority": 6,
+      "title": "Add wallet database encryption at rest",
+      "description": "Wallet SQLite database opened with no encryption. Contains private key material (BDK stores descriptors including xprv keys). Any filesystem access can extract private keys.",
+      "file": "crates/wolfe-wallet/src/lib.rs",
+      "lines": "32-33",
+      "cvss": "3.5",
+      "cwe": "CWE-311",
+      "done_criteria": [
+        "Wallet database encrypted at rest (SQLCipher or BDK encryption support)",
+        "Encryption password derived from user-provided passphrase or generated key",
+        "File permissions set to 0600 on wallet database",
+        "Passphrase can be provided via config, environment variable, or interactive prompt"
+      ],
+      "testing_and_validation": [
+        "Unit test: wallet file is not readable as plain SQLite",
+        "Unit test: wallet opens with correct passphrase",
+        "Unit test: wallet fails to open with wrong passphrase",
+        "Verify file permissions are restrictive",
+        "Hex dump wallet file and confirm no plaintext key material visible"
+      ],
+      "complete": true
+    },
+    {
+      "id": "LOW-003",
+      "category": "lower_priority",
+      "priority": 6,
+      "title": "Fix network config to error on unknown chain strings",
+      "description": "NetworkConfig::bitcoin_network() and chain_type_from_network() default unrecognized inputs to mainnet. A typo like 'maninet' silently starts the node on mainnet with real funds at risk.",
+      "files": [
+        "crates/wolfe-types/src/config.rs",
+        "crates/wolfe-consensus/src/lib.rs"
+      ],
+      "cvss": "3.5",
+      "cwe": "CWE-392",
+      "done_criteria": [
+        "Unrecognized network strings return an error (Result type) instead of defaulting to mainnet",
+        "Clear error message lists valid options: mainnet, testnet, testnet4, signet, regtest",
+        "Node refuses to start with invalid network string",
+        "Both bitcoin_network() and chain_type_from_network() updated"
+      ],
+      "testing_and_validation": [
+        "Unit test: valid strings (mainnet, testnet, signet, regtest) return correct network",
+        "Unit test: 'maninet' (typo) returns error",
+        "Unit test: empty string returns error",
+        "Unit test: case sensitivity handled (e.g., 'Mainnet' \u2192 either works or errors, not silent default)"
+      ],
+      "complete": true
+    },
+    {
+      "id": "LOW-004",
+      "category": "lower_priority",
+      "priority": 6,
+      "title": "Implement mempool ancestor/descendant limit enforcement",
+      "description": "MempoolConfig has max_ancestors and max_descendants (both default 25) but these limits are never checked. The pool tracks tx count but not ancestor/descendant chains. This allows mempool flooding via long chains.",
+      "file": "crates/wolfe-mempool/src/pool.rs",
+      "done_criteria": [
+        "Track parent-child relationships between mempool transactions",
+        "Reject transactions that would exceed max_ancestors limit",
+        "Reject transactions that would cause any descendant to exceed max_descendants limit",
+        "Package/CPFP-aware limit checking"
+      ],
+      "testing_and_validation": [
+        "Unit test: chain of 25 ancestors accepted, 26th rejected",
+        "Unit test: tx with 25 descendants accepted, adding 26th descendant rejected",
+        "Unit test: diamond-shaped dependency graph counted correctly",
+        "Unit test: removing parent updates descendant counts"
+      ],
+      "complete": true
+    },
+    {
+      "id": "LOW-005",
+      "category": "lower_priority",
+      "priority": 6,
+      "title": "Implement mempool trim and expiry",
+      "description": "MempoolConfig has max_size_mb and expiry_hours but trim() and expire logic are never called. The mempool will grow unbounded in memory.",
+      "file": "crates/wolfe-mempool/src/pool.rs",
+      "done_criteria": [
+        "Periodic trim check when mempool exceeds max_size_mb",
+        "Trim evicts lowest fee-rate transactions first",
+        "Transactions older than expiry_hours are removed",
+        "Trim and expire run periodically (e.g., every 60 seconds)",
+        "Evicted transactions not re-accepted until fee rate increases"
+      ],
+      "testing_and_validation": [
+        "Unit test: mempool at max size \u2014 new higher-fee tx evicts lowest-fee tx",
+        "Unit test: old transactions expired after expiry_hours",
+        "Unit test: trim maintains consistent state (no dangling references)",
+        "Unit test: eviction order is strictly by fee rate"
+      ],
+      "complete": true
+    },
+    {
+      "id": "LOW-006",
+      "category": "lower_priority",
+      "priority": 6,
+      "title": "Make user-agent string configurable",
+      "description": "User-agent sent to every peer includes exact version. This enables targeted attacks against specific versions. Should be configurable for privacy-conscious operators.",
+      "file": "crates/wolfe-types/src/lib.rs",
+      "lines": "11-13",
+      "done_criteria": [
+        "P2pConfig gets optional user_agent field",
+        "If set, custom user-agent is used in version messages",
+        "If empty, default /BitcoinWolfe:VERSION/ is used",
+        "Maximum length enforced (256 bytes per BIP)"
+      ],
+      "testing_and_validation": [
+        "Unit test: default user-agent contains version",
+        "Unit test: custom user-agent used when configured",
+        "Unit test: overly long user-agent truncated",
+        "Verify connected peers see configured user-agent"
+      ],
+      "complete": true
+    },
+    {
+      "id": "LOW-007",
+      "category": "lower_priority",
+      "priority": 6,
+      "title": "Add cargo audit to CI pipeline",
+      "description": "Dependencies use broad version ranges. No automated vulnerability scanning. A compromised minor release would be pulled on cargo update. CI should run cargo audit to catch known CVEs.",
+      "file": ".github/workflows/ci.yml",
+      "done_criteria": [
+        "cargo audit added as CI step",
+        "CI fails on any known vulnerability in dependencies",
+        "Consider pinning exact versions for security-critical deps (bitcoin, rand, bitcoinkernel)",
+        "Dependabot or renovate configured for automated dependency updates"
+      ],
+      "testing_and_validation": [
+        "CI pipeline runs cargo audit successfully",
+        "Intentionally add a vulnerable dep version \u2192 CI fails",
+        "Verify critical deps (bitcoin, rand, bitcoinkernel) are pinned to exact versions in Cargo.toml"
+      ],
+      "complete": true
+    },
+    {
+      "id": "LOW-008",
+      "category": "lower_priority",
+      "priority": 6,
+      "title": "Fix CI clippy suppression",
+      "description": "CI runs clippy with -A dead_code -A unused_imports which hides potentially important warnings. Dead code in security-critical software could mask unfinished features or unmaintained code paths.",
+      "file": ".github/workflows/ci.yml",
+      "lines": "46",
+      "done_criteria": [
+        "Remove blanket -A dead_code and -A unused_imports from CI clippy",
+        "Fix all resulting dead_code warnings (remove unused code or add #[allow(dead_code)] with justification)",
+        "Fix all unused_imports warnings",
+        "CI clippy runs clean with no suppressions"
+      ],
+      "testing_and_validation": [
+        "cargo clippy --all-targets passes with no warnings and no -A flags",
+        "No new #[allow(dead_code)] added without a comment explaining why",
+        "CI pipeline succeeds"
+      ],
+      "complete": true
+    }
+  ]
+}

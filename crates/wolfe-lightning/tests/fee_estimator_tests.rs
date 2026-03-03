@@ -37,7 +37,10 @@ fn empty_mempool_returns_minimum() {
 
     // With empty mempool, all targets should return minimum (253 sat/kw)
     let fee = estimator.get_est_sat_per_1000_weight(ConfirmationTarget::ChannelCloseMinimum);
-    assert_eq!(fee, 253, "empty mempool should return LDK minimum 253 sat/kw");
+    assert_eq!(
+        fee, 253,
+        "empty mempool should return LDK minimum 253 sat/kw"
+    );
 }
 
 #[test]
@@ -128,6 +131,11 @@ fn all_confirmation_targets_return_valid_fee() {
     for target in targets {
         let fee = estimator.get_est_sat_per_1000_weight(target);
         assert!(fee > 0, "target {:?} returned zero fee", target);
-        assert!(fee >= 253, "target {:?} returned {} below minimum", target, fee);
+        assert!(
+            fee >= 253,
+            "target {:?} returned {} below minimum",
+            target,
+            fee
+        );
     }
 }

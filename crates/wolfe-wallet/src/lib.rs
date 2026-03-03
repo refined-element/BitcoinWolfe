@@ -33,7 +33,13 @@ impl NodeWallet {
         external_descriptor: String,
         internal_descriptor: String,
     ) -> Result<Self, WalletError> {
-        Self::open_with_encryption(db_path, network, external_descriptor, internal_descriptor, None)
+        Self::open_with_encryption(
+            db_path,
+            network,
+            external_descriptor,
+            internal_descriptor,
+            None,
+        )
     }
 
     /// Open with optional encryption key.
@@ -178,7 +184,10 @@ impl NodeWallet {
 
         let mut builder = self.wallet.build_tx();
         builder
-            .add_recipient(address.script_pubkey(), bdk_wallet::bitcoin::Amount::from_sat(amount_sat))
+            .add_recipient(
+                address.script_pubkey(),
+                bdk_wallet::bitcoin::Amount::from_sat(amount_sat),
+            )
             .fee_rate(fee_rate);
 
         let mut psbt = builder

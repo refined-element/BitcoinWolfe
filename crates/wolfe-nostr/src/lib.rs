@@ -189,9 +189,7 @@ impl NostrBridge {
             } => {
                 info!(
                     channel_id,
-                    counterparty,
-                    capacity_sat,
-                    "lightning channel opened (nostr event)"
+                    counterparty, capacity_sat, "lightning channel opened (nostr event)"
                 );
             }
             NostrEvent::LightningPaymentReceived {
@@ -200,8 +198,7 @@ impl NostrBridge {
             } => {
                 info!(
                     payment_hash,
-                    amount_msat,
-                    "lightning payment received (nostr event)"
+                    amount_msat, "lightning payment received (nostr event)"
                 );
             }
         }
@@ -219,13 +216,8 @@ impl NostrBridge {
         let fee_buckets = self.mempool.fee_histogram();
         let min_fee_rate = self.mempool.min_fee_rate();
 
-        let builder = events::mempool_fee_oracle(
-            size,
-            bytes,
-            min_fee_rate,
-            &fee_buckets,
-            &self.network,
-        );
+        let builder =
+            events::mempool_fee_oracle(size, bytes, min_fee_rate, &fee_buckets, &self.network);
 
         match self.client.send_event_builder(builder).await {
             Ok(output) => {

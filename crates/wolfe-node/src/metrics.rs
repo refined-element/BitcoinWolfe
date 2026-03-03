@@ -139,7 +139,9 @@ impl NodeMetrics {
             self.ln_peers_connected.load(Ordering::Relaxed)
         ));
 
-        out.push_str("# HELP wolfe_ln_capacity_sat Total Lightning channel capacity in satoshis.\n");
+        out.push_str(
+            "# HELP wolfe_ln_capacity_sat Total Lightning channel capacity in satoshis.\n",
+        );
         out.push_str("# TYPE wolfe_ln_capacity_sat gauge\n");
         out.push_str(&format!(
             "wolfe_ln_capacity_sat {}\n\n",

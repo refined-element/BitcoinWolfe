@@ -187,8 +187,8 @@ impl RpcServer {
         let expected_credentials = match (&self.config.user, &self.config.password) {
             (Some(user), Some(pass)) => {
                 use base64::Engine as _;
-                let encoded = base64::engine::general_purpose::STANDARD
-                    .encode(format!("{}:{}", user, pass));
+                let encoded =
+                    base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
                 Some(format!("Basic {}", encoded))
             }
             _ => {
@@ -224,7 +224,10 @@ impl RpcServer {
             .route("/api/mempool", get(handlers::get_mempool))
             .route("/api/peers", get(handlers::get_peers))
             .route("/api/lightning/info", get(handlers::get_lightning_info))
-            .route("/api/lightning/channels", get(handlers::get_lightning_channels))
+            .route(
+                "/api/lightning/channels",
+                get(handlers::get_lightning_channels),
+            )
             .with_state(state)
             .layer(middleware::from_fn(move |req, next| {
                 let creds = auth_credentials.clone();
@@ -245,7 +248,10 @@ impl RpcServer {
                 CorsLayer::new()
                     .allow_origin(origins)
                     .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-                    .allow_headers([axum::http::header::CONTENT_TYPE, axum::http::header::AUTHORIZATION]),
+                    .allow_headers([
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::header::AUTHORIZATION,
+                    ]),
             );
         }
 

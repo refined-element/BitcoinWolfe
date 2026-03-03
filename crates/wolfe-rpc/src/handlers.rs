@@ -244,7 +244,8 @@ async fn dispatch_rpc(
                 let block_data = engine
                     .read_block_data_at_height(block_info.height as u32)
                     .map_err(|e| RpcError::Internal(format!("failed to read block: {}", e)))?;
-                let raw = block_data.consensus_encode()
+                let raw = block_data
+                    .consensus_encode()
                     .map_err(|e| RpcError::Internal(format!("failed to encode block: {}", e)))?;
                 Ok(json!(hex::encode(raw)))
             } else {
@@ -288,7 +289,10 @@ async fn dispatch_rpc(
                     Ok(json!(raw_hex))
                 }
             } else {
-                Err(RpcError::NotFound(format!("transaction {} not found", txid_hex)))
+                Err(RpcError::NotFound(format!(
+                    "transaction {} not found",
+                    txid_hex
+                )))
             }
         }
 
@@ -320,7 +324,6 @@ async fn dispatch_rpc(
         }
 
         // ── Wallet RPCs ──────────────────────────────────────────────────
-
         "getbalance" => {
             let wallet = state
                 .wallet()
@@ -461,7 +464,6 @@ async fn dispatch_rpc(
         }
 
         // ── Lightning RPCs ────────────────────────────────────────────
-
         "ln_getinfo" => {
             let ln = state
                 .lightning()

@@ -10,15 +10,15 @@ use clap::{Parser, Subcommand};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+use wolfe_lightning::LightningManager;
 use wolfe_mempool::Mempool;
+use wolfe_nostr::{NostrBridge, NostrEvent, NostrSender};
 use wolfe_p2p::manager::PeerEvent;
 use wolfe_p2p::PeerManager;
 use wolfe_rpc::server::NodeState;
 use wolfe_rpc::RpcServer;
 use wolfe_store::NodeStore;
 use wolfe_types::Config;
-use wolfe_lightning::LightningManager;
-use wolfe_nostr::{NostrBridge, NostrEvent, NostrSender};
 use wolfe_wallet::NodeWallet;
 
 use std::collections::HashMap;
@@ -122,8 +122,7 @@ async fn main() -> Result<()> {
             .with_target(true)
             .with_ansi(false);
 
-        let stdout_layer = tracing_subscriber::fmt::layer()
-            .with_target(true);
+        let stdout_layer = tracing_subscriber::fmt::layer().with_target(true);
 
         tracing_subscriber::registry()
             .with(env_filter)
@@ -301,10 +300,7 @@ async fn main() -> Result<()> {
     };
 
     // ── Initialize RPC server ───────────────────────────────────────────
-    let mut node_state = NodeState::new(
-        config.network.chain.clone(),
-        mempool.clone(),
-    );
+    let mut node_state = NodeState::new(config.network.chain.clone(), mempool.clone());
     node_state.set_shutdown_flag(shutdown.clone());
     if let Some(ref engine) = consensus_engine {
         node_state.set_consensus(engine.clone());
