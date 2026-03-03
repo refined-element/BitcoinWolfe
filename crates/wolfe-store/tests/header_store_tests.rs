@@ -599,7 +599,7 @@ fn large_batch_insert() {
     for h in [0u32, 1, 50, 100, 250, 499] {
         let stored = HeaderStore::get_by_height(&rtx, h)
             .unwrap()
-            .expect(&format!("header at height {} should exist", h));
+            .unwrap_or_else(|| panic!("header at height {} should exist", h));
         assert_eq!(stored.height, h);
         assert_eq!(stored.header, chain[h as usize].0);
     }

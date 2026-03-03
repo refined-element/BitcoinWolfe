@@ -178,7 +178,7 @@ fn insert_headers_batch_stores_all_headers() {
     for (header, height) in &chain {
         let stored = HeaderStore::get_by_height(&rtx, *height)
             .unwrap()
-            .expect(&format!("header at height {} should exist", height));
+            .unwrap_or_else(|| panic!("header at height {} should exist", height));
         assert_eq!(stored.header, *header);
     }
 }
@@ -204,7 +204,7 @@ fn insert_headers_batch_single_element() {
     let (store, _dir) = temp_store();
     let header = make_header(0, zero_hash());
 
-    store.insert_headers_batch(&[(header.clone(), 0)]).unwrap();
+    store.insert_headers_batch(&[(header, 0)]).unwrap();
 
     let rtx = store.read_txn().unwrap();
     assert_eq!(HeaderStore::count(&rtx).unwrap(), 1);
@@ -453,7 +453,7 @@ fn reorganize_single_block_reorg() {
         ..make_header(2, fork_prev)
     };
 
-    let disconnected = store.reorganize(2, 1, &[(new_header.clone(), 2)]).unwrap();
+    let disconnected = store.reorganize(2, 1, &[(new_header, 2)]).unwrap();
     assert_eq!(disconnected.len(), 1);
     assert_eq!(disconnected[0], chain[2].0.block_hash());
 
