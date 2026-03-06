@@ -451,7 +451,10 @@ impl LightningManager {
             )
             .map_err(|e| LightningError::Payment(format!("{:?}", e)))?;
 
-        info!(payment_id = hex::encode(payment_id_bytes), "payment initiated");
+        info!(
+            payment_id = hex::encode(payment_id_bytes),
+            "payment initiated"
+        );
         Ok(hex::encode(payment_id_bytes))
     }
 
