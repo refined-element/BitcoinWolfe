@@ -522,6 +522,97 @@ async fn dispatch_rpc(
             Ok(json!(result))
         }
 
+        "ln_connect" => {
+            let ln = state
+                .lightning()
+                .ok_or_else(|| RpcError::Lightning("lightning not enabled".to_string()))?;
+
+            // Accept "pubkey@host:port" as single param or [pubkey, addr] as two params
+            let (pubkey_hex, addr_str) = match get_param_str(params, 0) {
+                Some(s) if s.contains('@') => {
+                    let parts: Vec<&str> = s.splitn(2, '@').collect();
+                    (parts[0].to_string(), parts[1].to_string())
+                }
+                Some(pk) => {
+                    let addr = get_param_str(params, 1)
+                        .ok_or_else(|| RpcError::InvalidParams("missing address".to_string()))?;
+                    (pk.to_string(), addr.to_string())
+                }
+                None => {
+                    return Err(RpcError::InvalidParams(
+                        "missing node_id (pubkey@host:port)".to_string(),
+                    ))
+                }
+            };
+
+            let pubkey: bitcoin::secp256k1::PublicKey = pubkey_hex
+                .parse()
+                .map_err(|e| RpcError::InvalidParams(format!("invalid pubkey: {}", e)))?;
+            let addr: std::net::SocketAddr = addr_str
+                .parse()
+                .map_err(|e| RpcError::InvalidParams(format!("invalid address: {}", e)))?;
+
+            ln.connect_peer(pubkey, addr)
+                .await
+                .map_err(|e| RpcError::Lightning(e.to_string()))?;
+
+            Ok(json!({ "connected": true }))
+        }
+
+        "ln_openchannel" => {
+            let ln = state
+                .lightning()
+                .ok_or_else(|| RpcError::Lightning("lightning not enabled".to_string()))?;
+
+            let pubkey_hex = get_param_str(params, 0)
+                .ok_or_else(|| RpcError::InvalidParams("missing node_id".to_string()))?;
+            let amount_sat = get_param_i64(params, 1)
+                .ok_or_else(|| RpcError::InvalidParams("missing amount_sat".to_string()))?
+                as u64;
+            let push_msat = get_param_i64(params, 2).unwrap_or(0) as u64;
+
+            let pubkey: bitcoin::secp256k1::PublicKey = pubkey_hex
+                .parse()
+                .map_err(|e| RpcError::InvalidParams(format!("invalid pubkey: {}", e)))?;
+
+            let channel_id = ln
+                .open_channel(pubkey, amount_sat, push_msat)
+                .map_err(|e| RpcError::Lightning(e.to_string()))?;
+
+            Ok(json!({ "channel_id": channel_id }))
+        }
+
+        "ln_invoice" => {
+            let ln = state
+                .lightning()
+                .ok_or_else(|| RpcError::Lightning("lightning not enabled".to_string()))?;
+
+            let amount_msat = get_param_i64(params, 0).map(|v| v as u64);
+            let description = get_param_str(params, 1).unwrap_or("wolfe invoice");
+            let expiry_secs = get_param_i64(params, 2).map(|v| v as u32);
+
+            let invoice = ln
+                .create_invoice(amount_msat, description, expiry_secs)
+                .map_err(|e| RpcError::Lightning(e.to_string()))?;
+
+            Ok(json!({ "invoice": invoice }))
+        }
+
+        "ln_pay" => {
+            let ln = state
+                .lightning()
+                .ok_or_else(|| RpcError::Lightning("lightning not enabled".to_string()))?;
+
+            let invoice_str = get_param_str(params, 0)
+                .ok_or_else(|| RpcError::InvalidParams("missing invoice".to_string()))?;
+
+            let payment_id = ln
+                .pay_invoice(invoice_str)
+                .map_err(|e| RpcError::Lightning(e.to_string()))?;
+
+            Ok(json!({ "payment_id": payment_id }))
+        }
+
         "uptime" => {
             let uptime = state.started_at.elapsed().as_secs();
             Ok(json!(uptime))

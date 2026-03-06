@@ -3086,6 +3086,7 @@ dependencies = [
  "hex",
  "lightning",
  "lightning-background-processor",
+ "lightning-invoice",
  "lightning-net-tokio",
  "lightning-rapid-gossip-sync",
  "rand 0.8.5",

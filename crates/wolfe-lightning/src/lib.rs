@@ -6,6 +6,7 @@ pub mod logger;
 pub mod persister;
 pub mod types;
 
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,11 +16,14 @@ use bitcoin::block::Header;
 use bitcoin::BlockHash;
 use lightning::chain::chainmonitor::ChainMonitor;
 use lightning::chain::{BestBlock, Confirm};
-use lightning::ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs};
+use lightning::ln::channelmanager::{
+    Bolt11InvoiceParameters, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
+    Retry,
+};
 use lightning::ln::peer_handler::{IgnoringMessageHandler, MessageHandler};
 use lightning::onion_message::messenger::{DefaultMessageRouter, OnionMessenger};
 use lightning::routing::gossip::NetworkGraph;
-use lightning::routing::router::DefaultRouter;
+use lightning::routing::router::{DefaultRouter, RouteParametersConfig};
 use lightning::routing::scoring::{
     ProbabilisticScorer, ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters,
 };
@@ -27,6 +31,7 @@ use lightning::sign::{KeysManager, NodeSigner};
 use lightning::util::config::UserConfig;
 use lightning::util::persist::{KVStoreSync, MonitorUpdatingPersister};
 use lightning::util::ser::ReadableArgs;
+use lightning_invoice::{Bolt11Invoice, Description};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -356,6 +361,98 @@ impl LightningManager {
     /// Get the network graph (for RPC handlers).
     pub fn network_graph(&self) -> &Arc<WolfeNetworkGraph> {
         &self.network_graph
+    }
+
+    /// Connect to a Lightning peer.
+    pub async fn connect_peer(
+        &self,
+        pubkey: bitcoin::secp256k1::PublicKey,
+        addr: SocketAddr,
+    ) -> Result<(), LightningError> {
+        info!(%pubkey, %addr, "connecting to Lightning peer");
+        let pm = self.peer_manager.clone();
+        match lightning_net_tokio::connect_outbound(pm.clone(), pubkey, addr).await {
+            Some(connection_future) => {
+                tokio::spawn(connection_future);
+                info!(%pubkey, "Lightning peer connected");
+                Ok(())
+            }
+            None => Err(LightningError::PeerConnection(format!(
+                "failed to connect to {}@{}",
+                pubkey, addr
+            ))),
+        }
+    }
+
+    /// Open a channel with a connected peer.
+    pub fn open_channel(
+        &self,
+        pubkey: bitcoin::secp256k1::PublicKey,
+        amount_sat: u64,
+        push_msat: u64,
+    ) -> Result<String, LightningError> {
+        let user_channel_id: u128 = rand::random();
+        match self.channel_manager.create_channel(
+            pubkey,
+            amount_sat,
+            push_msat,
+            user_channel_id,
+            None,
+            None,
+        ) {
+            Ok(channel_id) => {
+                info!(%pubkey, amount_sat, "channel open initiated");
+                Ok(hex::encode(channel_id.0))
+            }
+            Err(e) => Err(LightningError::Channel(format!("{:?}", e))),
+        }
+    }
+
+    /// Create a BOLT11 invoice.
+    pub fn create_invoice(
+        &self,
+        amount_msat: Option<u64>,
+        description: &str,
+        expiry_secs: Option<u32>,
+    ) -> Result<String, LightningError> {
+        let desc = Description::new(description.to_string())
+            .map_err(|e| LightningError::Invoice(format!("invalid description: {:?}", e)))?;
+        let params = Bolt11InvoiceParameters {
+            amount_msats: amount_msat,
+            description: lightning_invoice::Bolt11InvoiceDescription::Direct(desc),
+            invoice_expiry_delta_secs: expiry_secs,
+            ..Default::default()
+        };
+        match self.channel_manager.create_bolt11_invoice(params) {
+            Ok(invoice) => {
+                info!("created BOLT11 invoice");
+                Ok(invoice.to_string())
+            }
+            Err(e) => Err(LightningError::Invoice(format!("{:?}", e))),
+        }
+    }
+
+    /// Pay a BOLT11 invoice.
+    pub fn pay_invoice(&self, invoice_str: &str) -> Result<String, LightningError> {
+        let invoice: Bolt11Invoice = invoice_str
+            .parse()
+            .map_err(|e| LightningError::Invoice(format!("invalid invoice: {:?}", e)))?;
+
+        let payment_id_bytes: [u8; 32] = rand::random();
+        let payment_id = PaymentId(payment_id_bytes);
+
+        self.channel_manager
+            .pay_for_bolt11_invoice(
+                &invoice,
+                payment_id,
+                None,
+                RouteParametersConfig::default(),
+                Retry::Attempts(3),
+            )
+            .map_err(|e| LightningError::Payment(format!("{:?}", e)))?;
+
+        info!(payment_id = hex::encode(payment_id_bytes), "payment initiated");
+        Ok(hex::encode(payment_id_bytes))
     }
 
     /// Graceful shutdown.

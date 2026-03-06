@@ -39,6 +39,7 @@ lightning = "0.2"
 lightning-net-tokio = "0.2"
 lightning-background-processor = "0.2"
 lightning-rapid-gossip-sync = "0.2"
+lightning-invoice = "0.34"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

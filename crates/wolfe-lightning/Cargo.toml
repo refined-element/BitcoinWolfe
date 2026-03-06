@@ -11,6 +11,7 @@ lightning = { workspace = true }
 lightning-net-tokio = { workspace = true }
 lightning-background-processor = { workspace = true }
 lightning-rapid-gossip-sync = { workspace = true }
+lightning-invoice = { workspace = true }
 
 # Internal crates
 wolfe-types = { workspace = true }
