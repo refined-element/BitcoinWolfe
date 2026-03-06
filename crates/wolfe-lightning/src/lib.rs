@@ -318,9 +318,15 @@ impl LightningManager {
     ///
     /// During IBD with no open channels, this is a fast no-op.
     pub fn block_connected(&self, block: &bitcoin::Block, height: u32) {
-        // Skip during IBD if no channels exist (optimization)
-        if !self.has_channels.load(Ordering::Relaxed) && !height.is_multiple_of(10000) {
-            return;
+        // Update has_channels flag if channels appeared since startup
+        if !self.has_channels.load(Ordering::Relaxed) {
+            if !self.channel_manager.list_channels().is_empty() {
+                self.has_channels.store(true, Ordering::Relaxed);
+                info!("channel detected — enabling full block processing for LDK");
+            } else if !height.is_multiple_of(10000) {
+                // Skip during IBD if no channels exist (optimization)
+                return;
+            }
         }
 
         let header = &block.header;
