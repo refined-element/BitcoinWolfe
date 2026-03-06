@@ -69,9 +69,7 @@ fn create_invoice_with_amount_and_description() {
 fn create_invoice_zero_amount() {
     let (mgr, _sd, _ld) = setup();
 
-    let invoice_str = mgr
-        .create_invoice(None, "donation", None)
-        .unwrap();
+    let invoice_str = mgr.create_invoice(None, "donation", None).unwrap();
 
     let invoice: lightning_invoice::Bolt11Invoice = invoice_str.parse().unwrap();
     assert_eq!(invoice.amount_milli_satoshis(), None);
@@ -106,11 +104,7 @@ fn create_invoice_uses_our_node_id() {
         .copied()
         .unwrap_or_else(|| invoice.recover_payee_pub_key());
 
-    assert_eq!(
-        payee,
-        mgr.node_id(),
-        "invoice payee should be our node"
-    );
+    assert_eq!(payee, mgr.node_id(), "invoice payee should be our node");
 }
 
 #[test]
@@ -163,8 +157,7 @@ fn open_channel_fails_for_unknown_peer() {
 
     // Use a random pubkey that we're not connected to
     let random_key = bitcoin::secp256k1::PublicKey::from_slice(
-        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619")
-            .unwrap(),
+        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap(),
     )
     .unwrap();
 
@@ -185,8 +178,7 @@ fn open_channel_fails_for_zero_amount() {
     let (mgr, _sd, _ld) = setup();
 
     let random_key = bitcoin::secp256k1::PublicKey::from_slice(
-        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619")
-            .unwrap(),
+        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap(),
     )
     .unwrap();
 
@@ -201,8 +193,7 @@ async fn connect_peer_fails_for_unreachable_addr() {
     let (mgr, _sd, _ld) = setup();
 
     let random_key = bitcoin::secp256k1::PublicKey::from_slice(
-        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619")
-            .unwrap(),
+        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap(),
     )
     .unwrap();
 
@@ -210,7 +201,10 @@ async fn connect_peer_fails_for_unreachable_addr() {
     let addr: std::net::SocketAddr = "127.0.0.1:19999".parse().unwrap();
     let result = mgr.connect_peer(random_key, addr).await;
 
-    assert!(result.is_err(), "should fail connecting to unreachable addr");
+    assert!(
+        result.is_err(),
+        "should fail connecting to unreachable addr"
+    );
     match result.unwrap_err() {
         LightningError::PeerConnection(msg) => {
             assert!(msg.contains("failed to connect"), "got: {}", msg);
