@@ -199,10 +199,12 @@ impl LightningManager {
             accept_inbound_channels: config.accept_inbound_channels,
             channel_handshake_limits: lightning::util::config::ChannelHandshakeLimits {
                 min_funding_satoshis: config.min_channel_size_sat,
+                force_announced_channel_preference: false,
                 ..Default::default()
             },
             channel_handshake_config: lightning::util::config::ChannelHandshakeConfig {
                 max_inbound_htlc_value_in_flight_percent_of_channel: 100,
+                announce_for_forwarding: true,
                 ..Default::default()
             },
             ..Default::default()
