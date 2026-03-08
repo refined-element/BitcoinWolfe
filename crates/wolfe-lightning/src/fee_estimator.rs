@@ -16,6 +16,11 @@ impl WolfeFeeEstimator {
         Self { mempool }
     }
 
+    /// Get a fee rate suitable for sweeping spendable outputs (sat/kw).
+    pub fn sweep_fee_rate(&self) -> u32 {
+        self.get_est_sat_per_1000_weight(ConfirmationTarget::OutputSpendingFee)
+    }
+
     /// Sample fee rate from mempool histogram at a given percentile (0.0 = lowest, 1.0 = highest).
     fn sample_fee_rate_sat_per_vb(&self, percentile: f64) -> f64 {
         let histogram = self.mempool.fee_histogram();

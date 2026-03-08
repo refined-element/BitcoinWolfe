@@ -73,10 +73,13 @@ pub struct LightningManager {
     peer_manager: Arc<WolfePeerManager>,
     network_graph: Arc<WolfeNetworkGraph>,
     scorer: Arc<Mutex<WolfeScorer>>,
-    _keys_manager: Arc<KeysManager>,
+    keys_manager: Arc<KeysManager>,
+    broadcaster: Arc<WolfeBroadcaster>,
+    fee_estimator: Arc<WolfeFeeEstimator>,
     kv_store: Arc<WolfeKVStore>,
     event_tx: mpsc::Sender<LightningEvent>,
     has_channels: AtomicBool,
+    network: bitcoin::Network,
 }
 
 impl LightningManager {
@@ -274,10 +277,13 @@ impl LightningManager {
                 peer_manager,
                 network_graph,
                 scorer,
-                _keys_manager: keys_manager,
+                keys_manager,
+                broadcaster,
+                fee_estimator,
                 kv_store,
                 event_tx,
                 has_channels,
+                network,
             },
             sender,
             broadcast_rx,
@@ -479,15 +485,27 @@ impl LightningManager {
     /// Must be called regularly (every ~1s) from a background task.
     /// Handles: event processing, timer ticks, and periodic persistence.
     pub async fn tick(&self) {
-        use crate::event_handler::handle_ldk_event;
+        use crate::event_handler::{handle_ldk_event, EventContext};
+
+        let ctx = EventContext {
+            channel_manager: self.channel_manager.clone(),
+            keys_manager: self.keys_manager.clone(),
+            broadcaster: self.broadcaster.clone(),
+            fee_estimator: self.fee_estimator.clone(),
+            config: self.config.clone(),
+            network: self.network,
+        };
 
         // Process channel manager events
+        let ctx = Arc::new(ctx);
         let tx = self.event_tx.clone();
+        let ctx_cm = ctx.clone();
         self.channel_manager
             .process_pending_events_async(|event| {
                 let tx = tx.clone();
+                let ctx = ctx_cm.clone();
                 async move {
-                    handle_ldk_event(event, &tx).await;
+                    handle_ldk_event(event, &ctx, &tx).await;
                     Ok(())
                 }
             })
@@ -495,11 +513,13 @@ impl LightningManager {
 
         // Process chain monitor events
         let tx = self.event_tx.clone();
+        let ctx_mon = ctx.clone();
         self.chain_monitor
             .process_pending_events_async(|event| {
                 let tx = tx.clone();
+                let ctx = ctx_mon.clone();
                 async move {
-                    handle_ldk_event(event, &tx).await;
+                    handle_ldk_event(event, &ctx, &tx).await;
                     Ok(())
                 }
             })
@@ -508,6 +528,8 @@ impl LightningManager {
         // LDK timer ticks (manages retries, channel state, etc.)
         self.channel_manager.timer_tick_occurred();
         self.peer_manager.timer_tick_occurred();
+        // Process pending peer manager events (sends gossip queries, etc.)
+        self.peer_manager.process_events();
     }
 
     /// Persist all LDK state. Called periodically and on shutdown.
