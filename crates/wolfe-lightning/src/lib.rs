@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bitcoin::block::Header;
 use bitcoin::BlockHash;
 use lightning::chain::chainmonitor::ChainMonitor;
-use lightning::chain::{BestBlock, Confirm};
+use lightning::chain::{BestBlock, Confirm, Watch};
 use lightning::ln::channelmanager::{
     Bolt11InvoiceParameters, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
     Retry,
@@ -192,7 +192,7 @@ impl LightningManager {
             broadcaster.clone(),
             logger.clone(),
             fee_estimator.clone(),
-            monitor_persister,
+            monitor_persister.clone(),
             keys_manager.clone(),
             peer_storage_key,
         ));
@@ -215,6 +215,7 @@ impl LightningManager {
 
         let channel_manager = load_or_create_channel_manager(
             &kv_store,
+            &monitor_persister,
             keys_manager.clone(),
             fee_estimator.clone(),
             chain_monitor.clone(),
@@ -599,6 +600,7 @@ fn read_scorer(
 #[allow(clippy::too_many_arguments)]
 fn load_or_create_channel_manager(
     kv_store: &Arc<WolfeKVStore>,
+    monitor_persister: &Arc<WolfeMonitorPersister>,
     keys_manager: Arc<KeysManager>,
     fee_estimator: Arc<WolfeFeeEstimator>,
     chain_monitor: Arc<WolfeChainMonitor>,
@@ -618,39 +620,21 @@ fn load_or_create_channel_manager(
         Ok(data) => {
             info!("loading persisted channel manager");
 
-            // First, restore channel monitors
-            let monitor_keys = kv_store.list("channel_monitors", "").unwrap_or_default();
-
-            let mut channel_monitors = Vec::new();
-            for key in &monitor_keys {
-                match kv_store.read("channel_monitors", "", key) {
-                    Ok(monitor_data) => {
-                        let mut reader = lightning::io::Cursor::new(&monitor_data);
-                        match <(
-                            BlockHash,
-                            lightning::chain::channelmonitor::ChannelMonitor<
-                                lightning::sign::InMemorySigner,
-                            >,
-                        )>::read(
-                            &mut reader, (keys_manager.as_ref(), keys_manager.as_ref())
-                        ) {
-                            Ok((_blockhash, monitor)) => {
-                                channel_monitors.push(monitor);
-                            }
-                            Err(e) => {
-                                warn!(key, ?e, "failed to deserialize channel monitor");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!(key, ?e, "failed to read channel monitor");
-                    }
+            // Restore channel monitors via MonitorUpdatingPersister (reads from "monitors" namespace)
+            let mut channel_monitors = match monitor_persister.read_all_channel_monitors_with_updates() {
+                Ok(monitors) => {
+                    info!(count = monitors.len(), "loaded channel monitors");
+                    monitors
                 }
-            }
+                Err(e) => {
+                    warn!(?e, "failed to read channel monitors — starting with none");
+                    Vec::new()
+                }
+            };
 
             let monitor_refs: Vec<
                 &lightning::chain::channelmonitor::ChannelMonitor<lightning::sign::InMemorySigner>,
-            > = channel_monitors.iter().collect();
+            > = channel_monitors.iter().map(|(_bh, m)| m).collect();
 
             let read_args = ChannelManagerReadArgs::new(
                 keys_manager.clone(),
@@ -669,6 +653,14 @@ fn load_or_create_channel_manager(
             let mut reader = lightning::io::Cursor::new(&data);
             match <(BlockHash, WolfeChannelManager)>::read(&mut reader, read_args) {
                 Ok((_blockhash, manager)) => {
+                    // Register all monitors with chain_monitor (C3)
+                    for (_blockhash, monitor) in channel_monitors.drain(..) {
+                        let channel_id = monitor.channel_id();
+                        if let Err(_) = chain_monitor.watch_channel(channel_id, monitor) {
+                            warn!(%channel_id, "failed to register channel monitor with chain_monitor");
+                        }
+                    }
+
                     info!(
                         channels = manager.list_channels().len(),
                         "channel manager restored"
