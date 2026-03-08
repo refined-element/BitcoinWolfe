@@ -703,6 +703,19 @@ async fn main() -> Result<()> {
                             }
                         }
 
+                        // Notify LDK of chain reorganizations
+                        if let Some(reorg_height) = sync_engine.take_reorg_height() {
+                            if let (Some(ref ln), Some(ref engine)) = (&lightning_manager, &consensus_engine) {
+                                if let Ok(kernel_block) = engine.read_block_data_at_height(reorg_height) {
+                                    if let Ok(bytes) = kernel_block.consensus_encode() {
+                                        if let Ok(block) = bitcoin::consensus::deserialize::<bitcoin::Block>(&bytes) {
+                                            ln.handle_reorg(reorg_height, &block.header);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // Feed validated blocks to the wallet and Nostr bridge
                         if let Some((block, height)) = sync_engine.take_validated_block() {
                             // Feed to wallet

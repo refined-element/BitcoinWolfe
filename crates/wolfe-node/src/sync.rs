@@ -107,6 +107,9 @@ pub struct SyncEngine {
     /// Timestamp of the last block received from a peer. Used to detect
     /// stalls where the peer stops responding to getdata requests.
     last_block_time: Instant,
+    /// The height at which the most recent reorg disconnected blocks.
+    /// Consumed by the main loop to notify LDK of chain reorganizations.
+    last_reorg_height: Option<u32>,
 }
 
 impl SyncEngine {
@@ -160,6 +163,7 @@ impl SyncEngine {
             pending_txs: Vec::new(),
             peer_heights: HashMap::new(),
             last_block_time: Instant::now(),
+            last_reorg_height: None,
         }
     }
 
@@ -203,6 +207,13 @@ impl SyncEngine {
     /// Take pending transactions received from peers (for mempool insertion).
     pub fn take_pending_txs(&mut self) -> Vec<bitcoin::Transaction> {
         std::mem::take(&mut self.pending_txs)
+    }
+
+    /// Returns the height at which a reorg disconnected blocks, if any.
+    /// The main loop should forward this to LDK so it can disconnect the
+    /// affected blocks.
+    pub fn take_reorg_height(&mut self) -> Option<u32> {
+        self.last_reorg_height.take()
     }
 
     /// Handle a P2P message from a peer. Returns an optional response message.
@@ -430,6 +441,8 @@ impl SyncEngine {
                     if self.validated_height > self.tip_height {
                         self.validated_height = self.tip_height;
                     }
+                    // Record reorg for LDK notification
+                    self.last_reorg_height = Some(fork_h as u32);
                     // Reset locals to match rewound state
                     next_height = self.tip_height + 1;
                     validated.clear();
@@ -692,6 +705,8 @@ impl SyncEngine {
                     // Reset state to the common ancestor (no store reorg needed —
                     // new headers from getheaders will overwrite the wrong ones).
                     self.validated_height = common;
+                    // Record reorg for LDK notification
+                    self.last_reorg_height = Some(common as u32);
                     if let Ok(txn) = self.store.read_txn() {
                         if let Ok(Some(stored)) =
                             wolfe_store::HeaderStore::get_by_height(&txn, common as u32)

@@ -367,6 +367,19 @@ impl LightningManager {
             .best_block_updated(header, height.saturating_sub(1));
     }
 
+    /// Handle a chain reorganization.
+    ///
+    /// Rewinds LDK's best-block to the fork height so that re-fed blocks
+    /// after the reorg update channel state correctly. Called from the main
+    /// loop when the sync engine detects a reorg.
+    pub fn handle_reorg(&self, fork_height: u32, fork_header: &Header) {
+        info!(fork_height, "notifying LDK of chain reorganization");
+        self.channel_manager
+            .best_block_updated(fork_header, fork_height);
+        self.chain_monitor
+            .best_block_updated(fork_header, fork_height);
+    }
+
     /// Get the height of LDK's current best block.
     ///
     /// After restart, this tells us where LDK left off so we can feed
