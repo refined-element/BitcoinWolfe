@@ -31,15 +31,24 @@ fn dummy_tx(version: i32) -> Transaction {
 }
 
 #[test]
-fn empty_mempool_returns_minimum() {
+fn empty_mempool_returns_floor() {
     let mempool = make_mempool();
     let estimator = WolfeFeeEstimator::new(mempool);
 
-    // With empty mempool, all targets should return minimum (253 sat/kw)
+    // With empty mempool, targets return their safety floor (not raw 253)
+    // ChannelCloseMinimum floor is 1000 sat/kw (4 sat/vB)
     let fee = estimator.get_est_sat_per_1000_weight(ConfirmationTarget::ChannelCloseMinimum);
     assert_eq!(
+        fee, 1000,
+        "empty mempool should return ChannelCloseMinimum floor of 1000 sat/kw"
+    );
+
+    // MinAllowed targets have no elevated floor (just 253 sat/kw)
+    let fee =
+        estimator.get_est_sat_per_1000_weight(ConfirmationTarget::MinAllowedAnchorChannelRemoteFee);
+    assert_eq!(
         fee, 253,
-        "empty mempool should return LDK minimum 253 sat/kw"
+        "MinAllowed target should return 253 sat/kw floor"
     );
 }
 

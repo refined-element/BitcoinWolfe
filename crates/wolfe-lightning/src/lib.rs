@@ -686,7 +686,7 @@ fn load_or_create_channel_manager(
                     // Register all monitors with chain_monitor (C3)
                     for (_blockhash, monitor) in channel_monitors.drain(..) {
                         let channel_id = monitor.channel_id();
-                        if let Err(_) = chain_monitor.watch_channel(channel_id, monitor) {
+                        if chain_monitor.watch_channel(channel_id, monitor).is_err() {
                             warn!(%channel_id, "failed to register channel monitor with chain_monitor");
                         }
                     }
