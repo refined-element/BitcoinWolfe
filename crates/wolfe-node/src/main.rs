@@ -23,6 +23,7 @@ use wolfe_wallet::NodeWallet;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use tokio::sync::mpsc;
 
 use crate::metrics::NodeMetrics;
 use crate::sync::SyncEngine;
@@ -259,6 +260,7 @@ async fn main() -> Result<()> {
     };
 
     // ── Initialize Lightning manager (optional) ────────────────────────
+    let mut ln_broadcast_rx: Option<mpsc::UnboundedReceiver<bitcoin::Transaction>> = None;
     let lightning_manager: Option<Arc<LightningManager>> = if config.lightning.enabled {
         let best_hash = sync_engine.tip_hash();
         let best_height = sync_engine.validated_height() as u32;
@@ -271,7 +273,7 @@ async fn main() -> Result<()> {
             best_hash,
             best_height,
         ) {
-            Ok((manager, _sender, _broadcast_rx)) => {
+            Ok((manager, _sender, broadcast_rx)) => {
                 let manager = Arc::new(manager);
                 let node_id = manager.node_id();
                 info!(
@@ -288,6 +290,7 @@ async fn main() -> Result<()> {
                     }
                 });
 
+                ln_broadcast_rx = Some(broadcast_rx);
                 Some(manager)
             }
             Err(e) => {
@@ -462,6 +465,31 @@ async fn main() -> Result<()> {
         max_outbound = config.p2p.max_outbound,
         "P2P manager started"
     );
+
+    // ── Lightning TX broadcast pipeline ──────────────────────────────
+    // Wire LDK's broadcast channel to mempool + Bitcoin P2P network.
+    if let Some(mut rx) = ln_broadcast_rx.take() {
+        let broadcast_mempool = mempool.clone();
+        let broadcast_pm = peer_manager.clone();
+        let broadcast_shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            while let Some(tx) = rx.recv().await {
+                if broadcast_shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+                let txid = tx.compute_txid();
+                info!(%txid, "broadcasting Lightning transaction");
+                // Submit to local mempool
+                if let Err(e) = broadcast_mempool.add(tx.clone(), 0) {
+                    debug!(%txid, ?e, "Lightning tx rejected from mempool");
+                }
+                // Broadcast to peers via Bitcoin P2P inv message
+                use bitcoin::p2p::message::NetworkMessage;
+                let _ = broadcast_pm.broadcast(NetworkMessage::Tx(tx)).await;
+            }
+        });
+        info!("Lightning TX broadcast pipeline started");
+    }
 
     // ── Block pruning ──────────────────────────────────────────────────
     // libbitcoinkernel v0.2 doesn't expose pruning through its API, so we
