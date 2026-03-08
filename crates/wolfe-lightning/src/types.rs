@@ -10,9 +10,10 @@ use lightning::chain::Filter;
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::peer_handler::{IgnoringMessageHandler, PeerManager as LdkPeerManager};
 use lightning::onion_message::messenger::{DefaultMessageRouter, OnionMessenger};
-use lightning::routing::gossip::NetworkGraph;
+use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::router::DefaultRouter;
 use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
+use lightning::routing::utxo::UtxoLookup;
 use lightning::sign::KeysManager;
 use lightning::util::persist::MonitorUpdatingPersister;
 
@@ -38,6 +39,12 @@ pub type WolfeRouter = DefaultRouter<
 
 pub type WolfeMessageRouter =
     DefaultMessageRouter<Arc<WolfeNetworkGraph>, Arc<WolfeLogger>, Arc<KeysManager>>;
+
+pub type WolfeGossipSync = P2PGossipSync<
+    Arc<WolfeNetworkGraph>,
+    Arc<dyn UtxoLookup + Send + Sync>,
+    Arc<WolfeLogger>,
+>;
 
 // MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 pub type WolfeMonitorPersister = MonitorUpdatingPersister<
@@ -90,7 +97,7 @@ pub type WolfeOnionMessenger = OnionMessenger<
 pub type WolfePeerManager = LdkPeerManager<
     lightning_net_tokio::SocketDescriptor,
     Arc<WolfeChannelManager>, // CM: ChannelMessageHandler
-    IgnoringMessageHandler,   // RM: RoutingMessageHandler
+    Arc<WolfeGossipSync>,     // RM: RoutingMessageHandler
     Arc<WolfeOnionMessenger>, // OM: OnionMessageHandler
     Arc<WolfeLogger>,         // L: Logger
     IgnoringMessageHandler,   // CMH: CustomMessageHandler

@@ -21,6 +21,8 @@ use lightning::ln::channelmanager::{
     Retry,
 };
 use lightning::ln::peer_handler::{IgnoringMessageHandler, MessageHandler};
+use lightning::routing::gossip::P2PGossipSync;
+use lightning::routing::utxo::UtxoLookup;
 use lightning::onion_message::messenger::{DefaultMessageRouter, OnionMessenger};
 use lightning::routing::gossip::NetworkGraph;
 use lightning::routing::router::{DefaultRouter, RouteParametersConfig};
@@ -244,11 +246,18 @@ impl LightningManager {
             IgnoringMessageHandler {},
         ));
 
+        // ── P2P Gossip Sync ──────────────────────────────────────────────
+        let gossip_sync = Arc::new(P2PGossipSync::new(
+            network_graph.clone(),
+            None::<Arc<dyn UtxoLookup + Send + Sync>>,
+            logger.clone(),
+        ));
+
         // ── LDK Peer Manager ───────────────────────────────────────────
         let ephemeral_bytes: [u8; 32] = rand::random();
         let lightning_msg_handler = MessageHandler {
             chan_handler: channel_manager.clone(),
-            route_handler: IgnoringMessageHandler {},
+            route_handler: gossip_sync,
             onion_message_handler: onion_messenger,
             custom_message_handler: IgnoringMessageHandler {},
             send_only_message_handler: chain_monitor.clone(),
