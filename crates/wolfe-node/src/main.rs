@@ -299,6 +299,66 @@ async fn main() -> Result<()> {
         None
     };
 
+    // ── Catch up Lightning with blocks missed during shutdown ─────────
+    if let (Some(ref ln), Some(ref engine)) = (&lightning_manager, &consensus_engine) {
+        let ldk_height = ln.best_block_height();
+        let chain_height = engine.chain_height();
+
+        if chain_height > 0 && (ldk_height as i32) < chain_height {
+            let from = ldk_height + 1;
+            let to = chain_height as u32;
+            let gap = to - from + 1;
+
+            if !ln.channel_manager().list_channels().is_empty() {
+                // Has channels — feed every missed block so LDK can confirm funding txs
+                info!(
+                    ldk_height,
+                    chain_height,
+                    blocks_to_feed = gap,
+                    "catching up Lightning with missed blocks"
+                );
+                for height in from..=to {
+                    match engine.read_block_data_at_height(height) {
+                        Ok(kernel_block) => match kernel_block.consensus_encode() {
+                            Ok(bytes) => {
+                                match bitcoin::consensus::deserialize::<bitcoin::Block>(&bytes) {
+                                    Ok(block) => ln.block_connected(&block, height),
+                                    Err(e) => {
+                                        warn!(height, ?e, "LDK catch-up: deserialize failed");
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!(height, ?e, "LDK catch-up: encode failed");
+                                break;
+                            }
+                        },
+                        Err(e) => {
+                            warn!(height, ?e, "LDK catch-up: block read failed");
+                            break;
+                        }
+                    }
+                }
+                info!("Lightning catch-up complete");
+            } else {
+                // No channels — just update LDK's best block to the tip
+                info!(
+                    ldk_height,
+                    chain_height, "no channels — fast-forwarding Lightning to chain tip"
+                );
+                if let Ok(kernel_block) = engine.read_block_data_at_height(to) {
+                    if let Ok(bytes) = kernel_block.consensus_encode() {
+                        if let Ok(block) = bitcoin::consensus::deserialize::<bitcoin::Block>(&bytes)
+                        {
+                            ln.block_connected(&block, to);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ── Initialize RPC server ───────────────────────────────────────────
     let mut node_state = NodeState::new(config.network.chain.clone(), mempool.clone());
     node_state.set_shutdown_flag(shutdown.clone());

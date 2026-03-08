@@ -759,7 +759,7 @@ impl SyncEngine {
         for height in start..end {
             match wolfe_store::HeaderStore::get_by_height(&read_txn, height as u32) {
                 Ok(Some(stored)) => {
-                    inventory.push(Inventory::Block(stored.hash));
+                    inventory.push(Inventory::WitnessBlock(stored.hash));
                     self.pending_blocks.push_back(stored.hash);
                 }
                 _ => {

@@ -351,6 +351,14 @@ impl LightningManager {
             .best_block_updated(header, height.saturating_sub(1));
     }
 
+    /// Get the height of LDK's current best block.
+    ///
+    /// After restart, this tells us where LDK left off so we can feed
+    /// missed blocks via `block_connected`.
+    pub fn best_block_height(&self) -> u32 {
+        self.channel_manager.current_best_block().height
+    }
+
     /// Get the node's public key.
     pub fn node_id(&self) -> bitcoin::secp256k1::PublicKey {
         self.channel_manager.get_our_node_id()
