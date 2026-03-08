@@ -376,9 +376,10 @@ async fn main() -> Result<()> {
                 }
                 ln_tick.tick().await;
 
-                // Persist every 60 ticks (~60s)
+                // Persist every 5 ticks (~5s) — channel state changes can happen
+                // rapidly and losing even a few seconds of state risks force-closes.
                 persist_counter += 1;
-                if persist_counter % 60 == 0 {
+                if persist_counter % 5 == 0 {
                     ln_tick.persist_state();
                 }
             }

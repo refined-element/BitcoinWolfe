@@ -44,9 +44,27 @@ pub(crate) struct EventContext {
     pub keys_manager: Arc<KeysManager>,
     pub broadcaster: Arc<WolfeBroadcaster>,
     pub fee_estimator: Arc<WolfeFeeEstimator>,
+    pub kv_store: Arc<crate::persister::WolfeKVStore>,
     pub config: LightningConfig,
     #[allow(dead_code)]
     pub network: bitcoin::Network,
+}
+
+impl EventContext {
+    /// Persist channel manager immediately after a critical state change.
+    fn persist_channel_manager(&self) {
+        use lightning::util::ser::Writeable;
+        let buf = self.channel_manager.encode();
+        if let Err(e) = lightning::util::persist::KVStoreSync::write(
+            self.kv_store.as_ref(),
+            "channel_manager",
+            "",
+            "manager",
+            buf,
+        ) {
+            warn!(?e, "failed to persist channel manager after state change");
+        }
+    }
 }
 
 /// Handle LDK events. Called by the background processor.
@@ -237,6 +255,7 @@ pub(crate) async fn handle_ldk_event(
                 counterparty = %counterparty_node_id,
                 "channel ready"
             );
+            ctx.persist_channel_manager();
         }
 
         Event::ChannelClosed {
@@ -248,6 +267,7 @@ pub(crate) async fn handle_ldk_event(
                 reason = %reason_str,
                 "channel closed"
             );
+            ctx.persist_channel_manager();
             let _ = event_tx
                 .send(LightningEvent::ChannelClosed {
                     channel_id: hex::encode(channel_id.0),

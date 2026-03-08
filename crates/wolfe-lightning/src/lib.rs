@@ -509,6 +509,7 @@ impl LightningManager {
             keys_manager: self.keys_manager.clone(),
             broadcaster: self.broadcaster.clone(),
             fee_estimator: self.fee_estimator.clone(),
+            kv_store: self.kv_store.clone(),
             config: self.config.clone(),
             network: self.network,
         };
