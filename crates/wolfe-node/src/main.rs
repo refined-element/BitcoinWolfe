@@ -359,6 +359,30 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ── Lightning background processor ─────────────────────────────────
+    if let Some(ref ln) = lightning_manager {
+        let ln_tick = ln.clone();
+        let ln_shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            let mut tick_interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            let mut persist_counter: u64 = 0;
+            loop {
+                tick_interval.tick().await;
+                if ln_shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+                ln_tick.tick().await;
+
+                // Persist every 60 ticks (~60s)
+                persist_counter += 1;
+                if persist_counter % 60 == 0 {
+                    ln_tick.persist_state();
+                }
+            }
+        });
+        info!("Lightning background processor started");
+    }
+
     // ── Initialize RPC server ───────────────────────────────────────────
     let mut node_state = NodeState::new(config.network.chain.clone(), mempool.clone());
     node_state.set_shutdown_flag(shutdown.clone());

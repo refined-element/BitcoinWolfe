@@ -75,7 +75,7 @@ pub struct LightningManager {
     scorer: Arc<Mutex<WolfeScorer>>,
     _keys_manager: Arc<KeysManager>,
     kv_store: Arc<WolfeKVStore>,
-    _event_tx: mpsc::Sender<LightningEvent>,
+    event_tx: mpsc::Sender<LightningEvent>,
     has_channels: AtomicBool,
 }
 
@@ -276,7 +276,7 @@ impl LightningManager {
                 scorer,
                 _keys_manager: keys_manager,
                 kv_store,
-                _event_tx: event_tx,
+                event_tx,
                 has_channels,
             },
             sender,
@@ -474,13 +474,44 @@ impl LightningManager {
         Ok(hex::encode(payment_id_bytes))
     }
 
-    /// Graceful shutdown.
-    pub fn shutdown(&self) {
-        info!("lightning manager shutting down");
-        self.persist_state();
+    /// Process pending LDK events and run periodic maintenance.
+    ///
+    /// Must be called regularly (every ~1s) from a background task.
+    /// Handles: event processing, timer ticks, and periodic persistence.
+    pub async fn tick(&self) {
+        use crate::event_handler::handle_ldk_event;
+
+        // Process channel manager events
+        let tx = self.event_tx.clone();
+        self.channel_manager
+            .process_pending_events_async(|event| {
+                let tx = tx.clone();
+                async move {
+                    handle_ldk_event(event, &tx).await;
+                    Ok(())
+                }
+            })
+            .await;
+
+        // Process chain monitor events
+        let tx = self.event_tx.clone();
+        self.chain_monitor
+            .process_pending_events_async(|event| {
+                let tx = tx.clone();
+                async move {
+                    handle_ldk_event(event, &tx).await;
+                    Ok(())
+                }
+            })
+            .await;
+
+        // LDK timer ticks (manages retries, channel state, etc.)
+        self.channel_manager.timer_tick_occurred();
+        self.peer_manager.timer_tick_occurred();
     }
 
-    fn persist_state(&self) {
+    /// Persist all LDK state. Called periodically and on shutdown.
+    pub fn persist_state(&self) {
         use lightning::util::ser::Writeable;
 
         // Persist channel manager
@@ -502,6 +533,12 @@ impl LightningManager {
                 warn!(?e, "failed to persist scorer");
             }
         }
+    }
+
+    /// Graceful shutdown.
+    pub fn shutdown(&self) {
+        info!("lightning manager shutting down");
+        self.persist_state();
     }
 }
 
