@@ -423,6 +423,13 @@ impl LightningManager {
         amount_sat: u64,
         push_msat: u64,
     ) -> Result<String, LightningError> {
+        // Guard: don't open channels during IBD — fee estimates are unreliable
+        // and the funding tx confirmation won't be tracked properly.
+        if self.best_block_height() < 100 {
+            return Err(LightningError::Channel(
+                "node still syncing — cannot open channel during IBD".into(),
+            ));
+        }
         let user_channel_id: u128 = rand::random();
         match self.channel_manager.create_channel(
             pubkey,

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use lightning::io;
 use lightning::util::persist::KVStoreSync;
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, TableDefinition};
 
 /// Table storing all LDK persistence data.
 /// Key format: "namespace/secondary_namespace/key" -> raw bytes
@@ -145,6 +145,19 @@ impl KVStoreSync for WolfeKVStore {
     ) -> Result<Vec<String>, io::Error> {
         let prefix = Self::make_prefix(primary_namespace, secondary_namespace);
 
+        // Compute the exclusive upper bound for the range query.
+        // Since our keys are ASCII, incrementing the last byte of the prefix
+        // gives us an exclusive end bound that captures all prefixed keys.
+        let range_end = {
+            let mut end = prefix.clone();
+            // Replace trailing '/' with '0' (next ASCII char after '/') to form exclusive bound
+            // '/' is 0x2F, '0' is 0x30
+            if let Some(last) = end.pop() {
+                end.push((last as u8 + 1) as char);
+            }
+            end
+        };
+
         let read_txn = self
             .db
             .begin_read()
@@ -156,7 +169,7 @@ impl KVStoreSync for WolfeKVStore {
 
         let mut keys = Vec::new();
         let iter = table
-            .iter()
+            .range(prefix.as_str()..range_end.as_str())
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
         for entry in iter {
@@ -164,7 +177,6 @@ impl KVStoreSync for WolfeKVStore {
                 entry.map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
             let full_key = key_guard.value();
             if full_key.starts_with(&prefix) {
-                // Extract just the key part after the prefix
                 let short_key = &full_key[prefix.len()..];
                 keys.push(short_key.to_string());
             }

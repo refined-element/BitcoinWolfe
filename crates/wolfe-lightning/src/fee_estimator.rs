@@ -80,7 +80,17 @@ impl FeeEstimator for WolfeFeeEstimator {
         // Convert sat/vB to sat/kw: multiply by 250 (1 vbyte = 4 weight units, 1000/4 = 250)
         let sat_per_kw = (sat_per_vb * 250.0) as u32;
 
-        // LDK minimum is 253 sat/kw
-        std::cmp::max(sat_per_kw, 253)
+        // Safety floors per target — protects against empty mempool during IBD
+        // returning 0 sat/vB, which would cause LDK to create unbroadcastable txs.
+        let floor = match target {
+            ConfirmationTarget::MaximumFeeEstimate => 50_000,  // 200 sat/vB
+            ConfirmationTarget::UrgentOnChainSweep => 5_000,   // 20 sat/vB
+            ConfirmationTarget::NonAnchorChannelFee => 3_000,  // 12 sat/vB
+            ConfirmationTarget::AnchorChannelFee => 1_000,     // 4 sat/vB
+            ConfirmationTarget::ChannelCloseMinimum => 1_000,  // 4 sat/vB
+            _ => 253,                                          // 1 sat/vB minimum
+        };
+
+        std::cmp::max(sat_per_kw, floor)
     }
 }
