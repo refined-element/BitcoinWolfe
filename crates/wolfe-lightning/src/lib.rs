@@ -558,6 +558,11 @@ impl LightningManager {
             })
             .await;
 
+        // Process pending HTLC forwards — this is what generates
+        // PaymentClaimable events for incoming payments. Must be called
+        // regularly or incoming HTLCs will never be settled.
+        self.channel_manager.process_pending_htlc_forwards();
+
         // LDK timer ticks (manages retries, channel state, etc.)
         self.channel_manager.timer_tick_occurred();
         self.peer_manager.timer_tick_occurred();
