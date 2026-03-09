@@ -217,7 +217,9 @@ fn persist_state_writes_all_components() {
     mgr.persist_state();
 
     // Manager should still be functional
-    let _invoice = mgr.create_invoice(Some(1000), "after persist", None).unwrap();
+    let _invoice = mgr
+        .create_invoice(Some(1000), "after persist", None)
+        .unwrap();
 }
 
 #[test]
@@ -225,7 +227,9 @@ fn shutdown_persists_state() {
     let (mgr, _rx, _sd, _ld) = setup();
 
     // Create an invoice to have some state
-    let _invoice = mgr.create_invoice(Some(1000), "before shutdown", None).unwrap();
+    let _invoice = mgr
+        .create_invoice(Some(1000), "before shutdown", None)
+        .unwrap();
 
     // Shutdown should persist without panic
     mgr.shutdown();

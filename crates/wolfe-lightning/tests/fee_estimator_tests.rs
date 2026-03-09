@@ -46,10 +46,7 @@ fn empty_mempool_returns_floor() {
     // MinAllowed targets have no elevated floor (just 253 sat/kw)
     let fee =
         estimator.get_est_sat_per_1000_weight(ConfirmationTarget::MinAllowedAnchorChannelRemoteFee);
-    assert_eq!(
-        fee, 253,
-        "MinAllowed target should return 253 sat/kw floor"
-    );
+    assert_eq!(fee, 253, "MinAllowed target should return 253 sat/kw floor");
 }
 
 #[test]

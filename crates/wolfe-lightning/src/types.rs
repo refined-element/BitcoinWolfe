@@ -40,11 +40,8 @@ pub type WolfeRouter = DefaultRouter<
 pub type WolfeMessageRouter =
     DefaultMessageRouter<Arc<WolfeNetworkGraph>, Arc<WolfeLogger>, Arc<KeysManager>>;
 
-pub type WolfeGossipSync = P2PGossipSync<
-    Arc<WolfeNetworkGraph>,
-    Arc<dyn UtxoLookup + Send + Sync>,
-    Arc<WolfeLogger>,
->;
+pub type WolfeGossipSync =
+    P2PGossipSync<Arc<WolfeNetworkGraph>, Arc<dyn UtxoLookup + Send + Sync>, Arc<WolfeLogger>>;
 
 // MonitorUpdatingPersister<K, L, ES, SP, BI, FE>
 pub type WolfeMonitorPersister = MonitorUpdatingPersister<

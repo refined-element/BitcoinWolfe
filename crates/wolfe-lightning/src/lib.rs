@@ -21,14 +21,14 @@ use lightning::ln::channelmanager::{
     Retry,
 };
 use lightning::ln::peer_handler::{IgnoringMessageHandler, MessageHandler};
-use lightning::routing::gossip::P2PGossipSync;
-use lightning::routing::utxo::UtxoLookup;
 use lightning::onion_message::messenger::{DefaultMessageRouter, OnionMessenger};
 use lightning::routing::gossip::NetworkGraph;
+use lightning::routing::gossip::P2PGossipSync;
 use lightning::routing::router::{DefaultRouter, RouteParametersConfig};
 use lightning::routing::scoring::{
     ProbabilisticScorer, ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters,
 };
+use lightning::routing::utxo::UtxoLookup;
 use lightning::sign::{KeysManager, NodeSigner};
 use lightning::util::config::UserConfig;
 use lightning::util::persist::{KVStoreSync, MonitorUpdatingPersister};
@@ -653,16 +653,17 @@ fn load_or_create_channel_manager(
             info!("loading persisted channel manager");
 
             // Restore channel monitors via MonitorUpdatingPersister (reads from "monitors" namespace)
-            let mut channel_monitors = match monitor_persister.read_all_channel_monitors_with_updates() {
-                Ok(monitors) => {
-                    info!(count = monitors.len(), "loaded channel monitors");
-                    monitors
-                }
-                Err(e) => {
-                    warn!(?e, "failed to read channel monitors — starting with none");
-                    Vec::new()
-                }
-            };
+            let mut channel_monitors =
+                match monitor_persister.read_all_channel_monitors_with_updates() {
+                    Ok(monitors) => {
+                        info!(count = monitors.len(), "loaded channel monitors");
+                        monitors
+                    }
+                    Err(e) => {
+                        warn!(?e, "failed to read channel monitors — starting with none");
+                        Vec::new()
+                    }
+                };
 
             let monitor_refs: Vec<
                 &lightning::chain::channelmonitor::ChannelMonitor<lightning::sign::InMemorySigner>,

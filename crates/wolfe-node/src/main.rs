@@ -306,7 +306,11 @@ async fn main() -> Result<()> {
     if let (Some(ref ln), Some(ref engine)) = (&lightning_manager, &consensus_engine) {
         let ldk_height = ln.best_block_height();
         let chain_height = engine.chain_height();
-        let kernel_height = if chain_height > 0 { chain_height as u32 } else { 0 };
+        let kernel_height = if chain_height > 0 {
+            chain_height as u32
+        } else {
+            0
+        };
 
         if kernel_height > 0 && ldk_height > kernel_height {
             // Kernel re-imports blocks from scratch on startup, so its height
@@ -316,14 +320,11 @@ async fn main() -> Result<()> {
             // and force-closes channels.
             warn!(
                 ldk_height,
-                kernel_height,
-                "LDK is ahead of kernel — rewinding LDK to kernel height"
+                kernel_height, "LDK is ahead of kernel — rewinding LDK to kernel height"
             );
             if let Ok(kernel_block) = engine.read_block_data_at_height(kernel_height) {
                 if let Ok(bytes) = kernel_block.consensus_encode() {
-                    if let Ok(block) =
-                        bitcoin::consensus::deserialize::<bitcoin::Block>(&bytes)
-                    {
+                    if let Ok(block) = bitcoin::consensus::deserialize::<bitcoin::Block>(&bytes) {
                         ln.handle_reorg(kernel_height, &block.header);
                         info!(
                             kernel_height,

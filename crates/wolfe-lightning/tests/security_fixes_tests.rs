@@ -22,9 +22,7 @@ use wolfe_types::config::{LightningConfig, MempoolConfig};
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-fn make_manager_at_height(
-    height: u32,
-) -> (LightningManager, TempDir, TempDir) {
+fn make_manager_at_height(height: u32) -> (LightningManager, TempDir, TempDir) {
     let store_dir = TempDir::new().unwrap();
     let ln_dir = TempDir::new().unwrap();
     let store = Arc::new(NodeStore::open(store_dir.path().join("test.redb")).unwrap());
@@ -73,8 +71,7 @@ fn open_channel_rejected_during_ibd_height_0() {
     let (mgr, _sd, _ld) = make_manager_at_height(0);
 
     let pubkey = bitcoin::secp256k1::PublicKey::from_slice(
-        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619")
-            .unwrap(),
+        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap(),
     )
     .unwrap();
 
@@ -98,8 +95,7 @@ fn open_channel_rejected_during_ibd_height_50() {
     let (mgr, _sd, _ld) = make_manager_at_height(50);
 
     let pubkey = bitcoin::secp256k1::PublicKey::from_slice(
-        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619")
-            .unwrap(),
+        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap(),
     )
     .unwrap();
 
@@ -119,8 +115,7 @@ fn open_channel_rejected_during_ibd_height_99() {
     let (mgr, _sd, _ld) = make_manager_at_height(99);
 
     let pubkey = bitcoin::secp256k1::PublicKey::from_slice(
-        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619")
-            .unwrap(),
+        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap(),
     )
     .unwrap();
 
@@ -140,8 +135,7 @@ fn open_channel_allowed_at_height_100() {
     let (mgr, _sd, _ld) = make_manager_at_height(100);
 
     let pubkey = bitcoin::secp256k1::PublicKey::from_slice(
-        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619")
-            .unwrap(),
+        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap(),
     )
     .unwrap();
 
@@ -166,8 +160,7 @@ fn open_channel_allowed_at_height_900000() {
     let (mgr, _sd, _ld) = make_manager_at_height(900_000);
 
     let pubkey = bitcoin::secp256k1::PublicKey::from_slice(
-        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619")
-            .unwrap(),
+        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap(),
     )
     .unwrap();
 
@@ -195,9 +188,15 @@ fn kv_list_range_query_basic() {
     let (store, _dir) = make_kv_store();
 
     // Write keys in "monitors" namespace
-    store.write("monitors", "", "abc", b"data1".to_vec()).unwrap();
-    store.write("monitors", "", "def", b"data2".to_vec()).unwrap();
-    store.write("monitors", "", "ghi", b"data3".to_vec()).unwrap();
+    store
+        .write("monitors", "", "abc", b"data1".to_vec())
+        .unwrap();
+    store
+        .write("monitors", "", "def", b"data2".to_vec())
+        .unwrap();
+    store
+        .write("monitors", "", "ghi", b"data3".to_vec())
+        .unwrap();
 
     let keys = store.list("monitors", "").unwrap();
     assert_eq!(keys.len(), 3);
@@ -339,7 +338,9 @@ fn kv_write_read_roundtrip_with_range_query() {
 
     // Write data
     let data = b"test channel monitor data".to_vec();
-    store.write("monitors", "", "outpoint_abc_0", data.clone()).unwrap();
+    store
+        .write("monitors", "", "outpoint_abc_0", data.clone())
+        .unwrap();
 
     // Read back
     let read_data = store.read("monitors", "", "outpoint_abc_0").unwrap();
@@ -424,8 +425,8 @@ fn fee_floor_min_allowed_uses_base_minimum() {
     let mempool = make_mempool();
     let estimator = WolfeFeeEstimator::new(mempool);
 
-    let fee = estimator
-        .get_est_sat_per_1000_weight(ConfirmationTarget::MinAllowedAnchorChannelRemoteFee);
+    let fee =
+        estimator.get_est_sat_per_1000_weight(ConfirmationTarget::MinAllowedAnchorChannelRemoteFee);
     assert!(
         fee >= 253,
         "MinAllowed should use base minimum 253, got {}",
@@ -498,7 +499,11 @@ fn sweep_fee_rate_returns_valid_value() {
     let estimator = WolfeFeeEstimator::new(mempool);
 
     let rate = estimator.sweep_fee_rate();
-    assert!(rate >= 253, "sweep_fee_rate should be at least 253, got {}", rate);
+    assert!(
+        rate >= 253,
+        "sweep_fee_rate should be at least 253, got {}",
+        rate
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -780,7 +785,9 @@ fn persist_and_reload_channel_manager_data() {
     .unwrap();
 
     // Should be functional
-    let invoice = mgr2.create_invoice(Some(10_000), "after reload", None).unwrap();
+    let invoice = mgr2
+        .create_invoice(Some(10_000), "after reload", None)
+        .unwrap();
     assert!(invoice.starts_with("lnbcrt"));
 }
 
@@ -813,10 +820,7 @@ fn multiple_persist_reload_cycles() {
 
         let id = mgr.node_id();
         if let Some(prev_id) = last_id {
-            assert_eq!(
-                prev_id, id,
-                "node_id changed across cycle {}", i
-            );
+            assert_eq!(prev_id, id, "node_id changed across cycle {}", i);
         }
         last_id = Some(id);
 

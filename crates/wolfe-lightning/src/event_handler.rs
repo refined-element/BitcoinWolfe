@@ -219,9 +219,7 @@ pub(crate) async fn handle_ldk_event(
                 }
             };
 
-            let fee_rate = ctx
-                .fee_estimator
-                .sweep_fee_rate();
+            let fee_rate = ctx.fee_estimator.sweep_fee_rate();
 
             let descriptor_refs: Vec<_> = outputs.iter().collect();
             let secp = Secp256k1::new();
@@ -236,8 +234,7 @@ pub(crate) async fn handle_ldk_event(
             ) {
                 Ok(tx) => {
                     info!(txid = %tx.compute_txid(), "broadcasting sweep transaction");
-                    ctx.broadcaster
-                        .broadcast_transactions(&[&tx]);
+                    ctx.broadcaster.broadcast_transactions(&[&tx]);
                 }
                 Err(_) => {
                     warn!("failed to create sweep transaction for spendable outputs");
@@ -276,16 +273,16 @@ pub(crate) async fn handle_ldk_event(
                 .await;
         }
 
-        Event::BumpTransaction(bump) => {
-            match &bump {
-                BumpTransactionEvent::ChannelClose { .. } => {
-                    warn!("BumpTransaction(ChannelClose) received — anchor bumping not yet supported");
-                }
-                BumpTransactionEvent::HTLCResolution { .. } => {
-                    warn!("BumpTransaction(HTLCResolution) received — anchor bumping not yet supported");
-                }
+        Event::BumpTransaction(bump) => match &bump {
+            BumpTransactionEvent::ChannelClose { .. } => {
+                warn!("BumpTransaction(ChannelClose) received — anchor bumping not yet supported");
             }
-        }
+            BumpTransactionEvent::HTLCResolution { .. } => {
+                warn!(
+                    "BumpTransaction(HTLCResolution) received — anchor bumping not yet supported"
+                );
+            }
+        },
 
         _ => {
             debug!(?event, "unhandled LDK event");
