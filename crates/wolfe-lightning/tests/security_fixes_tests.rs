@@ -279,7 +279,7 @@ fn kv_list_range_query_secondary_namespace() {
     // after the range query too.
     // The key extraction `&full_key[prefix.len()..]` would give "sub1/key_a"
     // which is correct if we want all keys under "monitors".
-    assert!(no_sub_keys.len() >= 1);
+    assert!(!no_sub_keys.is_empty());
 }
 
 #[test]
