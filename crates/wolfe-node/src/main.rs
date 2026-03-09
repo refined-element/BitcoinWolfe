@@ -306,17 +306,42 @@ async fn main() -> Result<()> {
     if let (Some(ref ln), Some(ref engine)) = (&lightning_manager, &consensus_engine) {
         let ldk_height = ln.best_block_height();
         let chain_height = engine.chain_height();
+        let kernel_height = if chain_height > 0 { chain_height as u32 } else { 0 };
 
-        if chain_height > 0 && (ldk_height as i32) < chain_height {
+        if kernel_height > 0 && ldk_height > kernel_height {
+            // Kernel re-imports blocks from scratch on startup, so its height
+            // can be behind LDK's persisted height. Rewind LDK to the kernel
+            // height so it re-receives blocks (including funding txs) as they
+            // sync in. Without this, LDK sees 0 confirmations for funding txs
+            // and force-closes channels.
+            warn!(
+                ldk_height,
+                kernel_height,
+                "LDK is ahead of kernel — rewinding LDK to kernel height"
+            );
+            if let Ok(kernel_block) = engine.read_block_data_at_height(kernel_height) {
+                if let Ok(bytes) = kernel_block.consensus_encode() {
+                    if let Ok(block) =
+                        bitcoin::consensus::deserialize::<bitcoin::Block>(&bytes)
+                    {
+                        ln.handle_reorg(kernel_height, &block.header);
+                        info!(
+                            kernel_height,
+                            "LDK rewound to kernel height — will re-receive blocks during sync"
+                        );
+                    }
+                }
+            }
+        } else if kernel_height > 0 && ldk_height < kernel_height {
             let from = ldk_height + 1;
-            let to = chain_height as u32;
+            let to = kernel_height;
             let gap = to - from + 1;
 
             if !ln.channel_manager().list_channels().is_empty() {
                 // Has channels — feed every missed block so LDK can confirm funding txs
                 info!(
                     ldk_height,
-                    chain_height,
+                    kernel_height,
                     blocks_to_feed = gap,
                     "catching up Lightning with missed blocks"
                 );
@@ -348,7 +373,7 @@ async fn main() -> Result<()> {
                 // No channels — just update LDK's best block to the tip
                 info!(
                     ldk_height,
-                    chain_height, "no channels — fast-forwarding Lightning to chain tip"
+                    kernel_height, "no channels — fast-forwarding Lightning to chain tip"
                 );
                 if let Ok(kernel_block) = engine.read_block_data_at_height(to) {
                     if let Ok(bytes) = kernel_block.consensus_encode() {

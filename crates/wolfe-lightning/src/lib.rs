@@ -536,6 +536,7 @@ impl LightningManager {
                 let tx = tx.clone();
                 let ctx = ctx_cm.clone();
                 async move {
+                    info!("processing LDK channel_manager event: {:?}", event);
                     handle_ldk_event(event, &ctx, &tx).await;
                     Ok(())
                 }
@@ -550,6 +551,7 @@ impl LightningManager {
                 let tx = tx.clone();
                 let ctx = ctx_mon.clone();
                 async move {
+                    info!("processing LDK chain_monitor event: {:?}", event);
                     handle_ldk_event(event, &ctx, &tx).await;
                     Ok(())
                 }
