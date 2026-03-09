@@ -537,13 +537,12 @@ impl SyncEngine {
         inventory: Vec<Inventory>,
     ) -> Option<(PeerId, NetworkMessage)> {
         let mut tx_requests = Vec::new();
+        let mut has_block_announcement = false;
         for inv in &inventory {
             match inv {
-                Inventory::Block(hash) => {
+                Inventory::Block(hash) | Inventory::CompactBlock(hash) => {
                     debug!(%hash, "new block announced");
-                }
-                Inventory::CompactBlock(hash) => {
-                    debug!(%hash, "compact block announced");
+                    has_block_announcement = true;
                 }
                 Inventory::Transaction(txid) => {
                     if !self.known_txids.contains(txid) {
@@ -563,6 +562,18 @@ impl SyncEngine {
                 }
                 _ => {}
             }
+        }
+
+        // When a peer announces a new block and we're idle (Synced state),
+        // request headers starting from our tip.  This kicks off the
+        // standard header-sync → block-download pipeline so we pick up
+        // new blocks without requiring a restart.
+        if has_block_announcement && self.progress.state == SyncState::Synced {
+            info!(peer = ?peer_id, "new block announced — requesting headers");
+            self.sync_peer = Some(peer_id);
+            self.progress.state = SyncState::SyncingHeaders;
+            self.last_block_time = Instant::now();
+            return Some((peer_id, self.build_getheaders()));
         }
 
         if !tx_requests.is_empty() {
