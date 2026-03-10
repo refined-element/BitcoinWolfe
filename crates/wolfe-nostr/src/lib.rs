@@ -39,7 +39,7 @@ pub enum NostrEvent {
 
 /// The Nostr bridge: connects to relays and publishes node events.
 pub struct NostrBridge {
-    client: Client,
+    client: Arc<Client>,
     network: String,
     event_rx: mpsc::Receiver<NostrEvent>,
     mempool: Arc<Mempool>,
@@ -67,13 +67,16 @@ impl NostrBridge {
     /// If `secret_key` is provided (hex or nsec), uses that identity.
     /// Otherwise generates an ephemeral keypair (logged at startup so the user
     /// can find their npub).
+    ///
+    /// Returns `(bridge, sender, client)` where `client` is a shared handle
+    /// that can be used by RPC handlers to publish events or query relays.
     pub async fn new(
         secret_key: Option<&str>,
         relays: &[String],
         network: String,
         mempool: Arc<Mempool>,
         fee_oracle_interval_secs: u64,
-    ) -> Result<(Self, NostrSender), NostrError> {
+    ) -> Result<(Self, NostrSender, Arc<Client>), NostrError> {
         let keys = match secret_key {
             Some(sk) => Keys::parse(sk).map_err(|e| NostrError::InvalidKey(e.to_string()))?,
             None => {
@@ -86,7 +89,7 @@ impl NostrBridge {
             }
         };
 
-        let client = Client::builder().signer(keys.clone()).build();
+        let client = Arc::new(Client::builder().signer(keys.clone()).build());
 
         for relay_url in relays {
             client
@@ -96,6 +99,7 @@ impl NostrBridge {
         }
 
         let (tx, rx) = mpsc::channel(256);
+        let shared_client = client.clone();
 
         Ok((
             Self {
@@ -107,12 +111,18 @@ impl NostrBridge {
                 keys,
             },
             NostrSender { tx },
+            shared_client,
         ))
     }
 
     /// Public key of this bridge's identity.
     pub fn public_key(&self) -> PublicKey {
         self.keys.public_key()
+    }
+
+    /// Get the bridge's keys for external use.
+    pub fn keys(&self) -> &Keys {
+        &self.keys
     }
 
     /// Run the Nostr bridge. This blocks until the channel is closed.

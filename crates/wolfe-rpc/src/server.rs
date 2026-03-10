@@ -14,10 +14,11 @@ use tracing::{info, warn};
 use wolfe_consensus::ConsensusEngine;
 use wolfe_lightning::LightningManager;
 use wolfe_mempool::Mempool;
-use wolfe_types::config::{NostrConfig, RpcConfig};
+use wolfe_types::config::{L402Config, NostrConfig, RpcConfig};
 use wolfe_wallet::NodeWallet;
 
 use crate::handlers;
+use crate::l402;
 
 /// Shared node state accessible from RPC handlers.
 pub struct NodeState {
@@ -35,6 +36,13 @@ pub struct NodeState {
     consensus: Option<Arc<ConsensusEngine>>,
     wallet: parking_lot::RwLock<Option<Arc<std::sync::Mutex<NodeWallet>>>>,
     lightning: parking_lot::RwLock<Option<Arc<LightningManager>>>,
+    nostr_client: parking_lot::RwLock<Option<Arc<nostr_sdk::Client>>>,
+    nostr_pubkey: parking_lot::RwLock<Option<String>>,
+    /// L402 token secret (derived from Lightning seed).
+    l402_secret: parking_lot::RwLock<Option<[u8; 32]>>,
+    /// Payment hashes that have been claimed (for L402 verification).
+    paid_invoices: parking_lot::RwLock<Arc<dashmap::DashMap<[u8; 32], u64>>>,
+    pub l402_config: L402Config,
 }
 
 impl NodeState {
@@ -59,6 +67,11 @@ impl NodeState {
             consensus: None,
             wallet: parking_lot::RwLock::new(None),
             lightning: parking_lot::RwLock::new(None),
+            nostr_client: parking_lot::RwLock::new(None),
+            nostr_pubkey: parking_lot::RwLock::new(None),
+            l402_secret: parking_lot::RwLock::new(None),
+            paid_invoices: parking_lot::RwLock::new(Arc::new(dashmap::DashMap::new())),
+            l402_config: L402Config::default(),
         }
     }
 
@@ -84,6 +97,42 @@ impl NodeState {
 
     pub fn lightning(&self) -> Option<Arc<LightningManager>> {
         self.lightning.read().clone()
+    }
+
+    pub fn set_nostr_client(&self, client: Arc<nostr_sdk::Client>) {
+        *self.nostr_client.write() = Some(client);
+    }
+
+    pub fn nostr_client(&self) -> Option<Arc<nostr_sdk::Client>> {
+        self.nostr_client.read().clone()
+    }
+
+    pub fn set_nostr_pubkey(&self, npub: String) {
+        *self.nostr_pubkey.write() = Some(npub);
+    }
+
+    pub fn nostr_pubkey(&self) -> Option<String> {
+        self.nostr_pubkey.read().clone()
+    }
+
+    pub fn set_l402_secret(&self, secret: [u8; 32]) {
+        *self.l402_secret.write() = Some(secret);
+    }
+
+    pub fn l402_secret(&self) -> Option<[u8; 32]> {
+        *self.l402_secret.read()
+    }
+
+    pub fn set_paid_invoices(&self, map: Arc<dashmap::DashMap<[u8; 32], u64>>) {
+        *self.paid_invoices.write() = map;
+    }
+
+    pub fn paid_invoices(&self) -> Arc<dashmap::DashMap<[u8; 32], u64>> {
+        self.paid_invoices.read().clone()
+    }
+
+    pub fn set_l402_config(&mut self, config: L402Config) {
+        self.l402_config = config;
     }
 
     pub fn set_shutdown_flag(&mut self, flag: Arc<AtomicBool>) {
@@ -224,6 +273,21 @@ impl RpcServer {
         let nip98_pks = nip98_pubkeys.clone();
         let nip98_listen = listen_addr_for_nip98.clone();
         let nip98_on = nip98_enabled;
+
+        // L402 routes (public, gated by Lightning payment — no auth middleware)
+        let l402_state = state.clone();
+        let l402_routes = Router::new()
+            .route("/l402/api/block/:height", get(handlers::l402_get_block))
+            .route("/l402/api/fees", get(handlers::l402_get_fees))
+            .route("/l402/api/mempool", get(handlers::l402_get_mempool))
+            .route("/l402/api/chain", get(handlers::l402_get_chain))
+            .with_state(l402_state.clone())
+            .layer(middleware::from_fn(move |req, next| {
+                let s = l402_state.clone();
+                l402::l402_middleware(s, req, next)
+            }));
+
+        // Authenticated routes (JSON-RPC + REST)
         let mut app = Router::new()
             // JSON-RPC endpoint (Bitcoin Core compatible)
             .route("/", post(handlers::json_rpc))
@@ -244,6 +308,7 @@ impl RpcServer {
                 let listen = nip98_listen.clone();
                 auth_middleware(creds, nip98_on, pks, listen, req, next)
             }))
+            .merge(l402_routes)
             .layer(TraceLayer::new_for_http());
 
         if !self.config.cors_origins.is_empty() {

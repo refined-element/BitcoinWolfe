@@ -15,6 +15,7 @@ pub struct Config {
     pub metrics: MetricsConfig,
     pub nostr: NostrConfig,
     pub lightning: LightningConfig,
+    pub l402: L402Config,
 }
 
 impl Config {
@@ -331,6 +332,33 @@ impl Default for LightningConfig {
             min_channel_size_sat: 20_000,
             max_channel_size_sat: 16_777_215,
             rapid_gossip_sync_url: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct L402Config {
+    /// Enable L402 Lightning-gated API endpoints.
+    pub enabled: bool,
+    /// Price per API request in satoshis.
+    pub price_sats: u64,
+    /// How long a paid token remains valid (seconds).
+    pub token_expiry_secs: u64,
+    /// Invoice expiry time (seconds).
+    pub invoice_expiry_secs: u32,
+    /// Invoice description shown to payers.
+    pub invoice_description: String,
+}
+
+impl Default for L402Config {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            price_sats: 10,
+            token_expiry_secs: 3600,
+            invoice_expiry_secs: 600,
+            invoice_description: "BitcoinWolfe API access".to_string(),
         }
     }
 }

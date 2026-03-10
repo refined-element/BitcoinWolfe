@@ -50,6 +50,8 @@ pub(crate) struct EventContext {
     pub wallet: Option<Arc<Mutex<NodeWallet>>>,
     #[allow(dead_code)]
     pub network: bitcoin::Network,
+    /// Shared set of claimed payment hashes for L402 verification.
+    pub paid_invoices: Arc<dashmap::DashMap<[u8; 32], u64>>,
 }
 
 impl EventContext {
@@ -126,11 +128,10 @@ pub(crate) async fn handle_ldk_event(
                         "funding transaction created"
                     );
                     // Convert bdk_wallet Transaction back to bitcoin Transaction
-                    let tx: bitcoin::Transaction =
-                        bitcoin::consensus::deserialize(
-                            &bitcoin::consensus::serialize(&funding_tx),
-                        )
-                        .expect("tx round-trip");
+                    let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(
+                        &bitcoin::consensus::serialize(&funding_tx),
+                    )
+                    .expect("tx round-trip");
                     if let Err(e) = ctx.channel_manager.funding_transaction_generated(
                         temporary_channel_id,
                         counterparty_node_id,
@@ -229,6 +230,13 @@ pub(crate) async fn handle_ldk_event(
                 amount_msat,
                 "payment claimed"
             );
+            // Track for L402 verification
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            ctx.paid_invoices.insert(payment_hash.0, now);
+
             let _ = event_tx
                 .send(LightningEvent::PaymentReceived {
                     payment_hash: payment_hash.to_string(),

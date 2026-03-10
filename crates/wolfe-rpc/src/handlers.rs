@@ -9,6 +9,84 @@ use std::sync::Arc;
 use crate::error::RpcError;
 use crate::server::NodeState;
 
+// ─── L402 REST Handlers (Lightning-gated) ──────────────────────────────────
+
+/// GET /l402/api/block/:height
+pub async fn l402_get_block(
+    State(state): State<Arc<NodeState>>,
+    axum::extract::Path(height): axum::extract::Path<u32>,
+) -> Json<Value> {
+    let engine = match state.consensus() {
+        Some(e) => e,
+        None => return Json(json!({"error": "consensus engine not available"})),
+    };
+
+    match engine.read_block_data_at_height(height) {
+        Ok(block_data) => {
+            let bytes = match block_data.consensus_encode() {
+                Ok(b) => b,
+                Err(e) => return Json(json!({"error": format!("encode: {}", e)})),
+            };
+            let block: Result<bitcoin::Block, _> = deserialize(&bytes);
+            match block {
+                Ok(block) => {
+                    let txids: Vec<String> = block
+                        .txdata
+                        .iter()
+                        .map(|tx| tx.compute_txid().to_string())
+                        .collect();
+                    Json(json!({
+                        "height": height,
+                        "hash": block.block_hash().to_string(),
+                        "timestamp": block.header.time,
+                        "tx_count": block.txdata.len(),
+                        "size": bytes.len(),
+                        "txids": txids,
+                    }))
+                }
+                Err(e) => Json(json!({"error": format!("deserialize: {}", e)})),
+            }
+        }
+        Err(e) => Json(json!({"error": format!("block not found: {}", e)})),
+    }
+}
+
+/// GET /l402/api/fees
+pub async fn l402_get_fees(State(state): State<Arc<NodeState>>) -> Json<Value> {
+    let mempool = &state.mempool;
+    let histogram = mempool.fee_histogram();
+    let buckets: Vec<Value> = histogram
+        .iter()
+        .map(|(rate, count)| json!({"fee_rate": rate, "count": count}))
+        .collect();
+
+    Json(json!({
+        "min_fee_rate": mempool.min_fee_rate(),
+        "fee_histogram": buckets,
+    }))
+}
+
+/// GET /l402/api/mempool
+pub async fn l402_get_mempool(State(state): State<Arc<NodeState>>) -> Json<Value> {
+    let mempool = &state.mempool;
+    Json(json!({
+        "size": mempool.len(),
+        "bytes": mempool.size_bytes(),
+        "min_fee_rate": mempool.min_fee_rate(),
+    }))
+}
+
+/// GET /l402/api/chain
+pub async fn l402_get_chain(State(state): State<Arc<NodeState>>) -> Json<Value> {
+    Json(json!({
+        "chain": state.chain,
+        "blocks": state.best_height(),
+        "headers": state.headers_height(),
+        "best_block_hash": state.best_hash(),
+        "syncing": state.is_syncing(),
+    }))
+}
+
 // ─── REST API Handlers ─────────────────────────────────────────────────────
 
 /// GET /api/info - Node information
@@ -154,6 +232,7 @@ pub async fn json_rpc(
                 RpcError::NotFound(m) => (-1, m.clone()),
                 RpcError::Wallet(m) => (-4, m.clone()),
                 RpcError::Lightning(m) => (-5, m.clone()),
+                RpcError::Nostr(m) => (-6, m.clone()),
             };
             Json(JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
@@ -589,8 +668,9 @@ async fn dispatch_rpc(
 
             let channel_id_hex = get_param_str(params, 0)
                 .ok_or_else(|| RpcError::InvalidParams("missing channel_id".to_string()))?;
-            let counterparty_hex = get_param_str(params, 1)
-                .ok_or_else(|| RpcError::InvalidParams("missing counterparty node_id".to_string()))?;
+            let counterparty_hex = get_param_str(params, 1).ok_or_else(|| {
+                RpcError::InvalidParams("missing counterparty node_id".to_string())
+            })?;
             let force = get_param_bool(params, 2).unwrap_or(false);
 
             let channel_id_bytes: [u8; 32] = hex::decode(channel_id_hex)
@@ -646,11 +726,9 @@ async fn dispatch_rpc(
                 return Err(RpcError::Wallet("wallet already loaded".to_string()));
             }
 
-            let (wallet, mnemonic) = wolfe_wallet::NodeWallet::create_new(
-                &state.wallet_db_path,
-                state.network,
-            )
-            .map_err(|e| RpcError::Wallet(format!("wallet creation failed: {}", e)))?;
+            let (wallet, mnemonic) =
+                wolfe_wallet::NodeWallet::create_new(&state.wallet_db_path, state.network)
+                    .map_err(|e| RpcError::Wallet(format!("wallet creation failed: {}", e)))?;
 
             let wallet = Arc::new(std::sync::Mutex::new(wallet));
 
@@ -671,11 +749,14 @@ async fn dispatch_rpc(
         "importwallet" => {
             // Error if wallet already exists
             if state.wallet().is_some() {
-                return Err(RpcError::Wallet("wallet already loaded — stop node, delete wallet DB, then retry".to_string()));
+                return Err(RpcError::Wallet(
+                    "wallet already loaded — stop node, delete wallet DB, then retry".to_string(),
+                ));
             }
 
-            let mnemonic_str = get_param_str(params, 0)
-                .ok_or_else(|| RpcError::InvalidParams("missing mnemonic seed phrase".to_string()))?;
+            let mnemonic_str = get_param_str(params, 0).ok_or_else(|| {
+                RpcError::InvalidParams("missing mnemonic seed phrase".to_string())
+            })?;
 
             let mnemonic: wolfe_wallet::Mnemonic = mnemonic_str
                 .parse()
@@ -727,11 +808,12 @@ async fn dispatch_rpc(
                 let kernel_block = engine
                     .read_block_data_at_height(height)
                     .map_err(|e| RpcError::Internal(format!("block read at {}: {}", height, e)))?;
-                let bytes = kernel_block
-                    .consensus_encode()
-                    .map_err(|e| RpcError::Internal(format!("block encode at {}: {}", height, e)))?;
-                let block: bitcoin::Block = deserialize(&bytes)
-                    .map_err(|e| RpcError::Internal(format!("block deserialize at {}: {}", height, e)))?;
+                let bytes = kernel_block.consensus_encode().map_err(|e| {
+                    RpcError::Internal(format!("block encode at {}: {}", height, e))
+                })?;
+                let block: bitcoin::Block = deserialize(&bytes).map_err(|e| {
+                    RpcError::Internal(format!("block deserialize at {}: {}", height, e))
+                })?;
 
                 let mut w = wallet
                     .lock()
@@ -754,6 +836,99 @@ async fn dispatch_rpc(
                 "blocks_scanned": scanned,
                 "transactions_found": found_txs,
             }))
+        }
+
+        // ── Nostr RPCs ────────────────────────────────────────────────
+        "nostr_getinfo" => {
+            let npub = state.nostr_pubkey().unwrap_or_default();
+            let client = state.nostr_client();
+            let relay_count = if let Some(ref c) = client {
+                c.relays().await.len()
+            } else {
+                0
+            };
+            let relays: Vec<String> = if let Some(ref c) = client {
+                c.relays().await.keys().map(|u| u.to_string()).collect()
+            } else {
+                vec![]
+            };
+            Ok(json!({
+                "enabled": client.is_some(),
+                "npub": npub,
+                "relay_count": relay_count,
+                "relays": relays,
+            }))
+        }
+
+        "nostr_publish" => {
+            let client = state
+                .nostr_client()
+                .ok_or_else(|| RpcError::Nostr("nostr not enabled".to_string()))?;
+
+            let content = get_param_str(params, 0)
+                .ok_or_else(|| RpcError::InvalidParams("missing content".to_string()))?;
+            let kind = get_param_i64(params, 1).unwrap_or(1) as u16;
+
+            let builder = nostr_sdk::EventBuilder::new(nostr_sdk::Kind::Custom(kind), content);
+
+            let output = client
+                .send_event_builder(builder)
+                .await
+                .map_err(|e| RpcError::Nostr(format!("publish failed: {}", e)))?;
+
+            Ok(json!({
+                "event_id": output.val.to_string(),
+                "kind": kind,
+            }))
+        }
+
+        "nostr_addrelay" => {
+            let client = state
+                .nostr_client()
+                .ok_or_else(|| RpcError::Nostr("nostr not enabled".to_string()))?;
+
+            let url = get_param_str(params, 0)
+                .ok_or_else(|| RpcError::InvalidParams("missing relay URL".to_string()))?;
+
+            client
+                .add_relay(url)
+                .await
+                .map_err(|e| RpcError::Nostr(format!("add relay failed: {}", e)))?;
+
+            // Connect to the new relay
+            client.connect().await;
+
+            Ok(json!({ "added": url }))
+        }
+
+        "nostr_removerelay" => {
+            let client = state
+                .nostr_client()
+                .ok_or_else(|| RpcError::Nostr("nostr not enabled".to_string()))?;
+
+            let url = get_param_str(params, 0)
+                .ok_or_else(|| RpcError::InvalidParams("missing relay URL".to_string()))?;
+
+            client
+                .remove_relay(url)
+                .await
+                .map_err(|e| RpcError::Nostr(format!("remove relay failed: {}", e)))?;
+
+            Ok(json!({ "removed": url }))
+        }
+
+        "nostr_listrelays" => {
+            let client = state
+                .nostr_client()
+                .ok_or_else(|| RpcError::Nostr("nostr not enabled".to_string()))?;
+
+            let relays = client.relays().await;
+            let result: Vec<Value> = relays
+                .keys()
+                .map(|url| json!({ "url": url.to_string() }))
+                .collect();
+
+            Ok(json!(result))
         }
 
         "uptime" => {

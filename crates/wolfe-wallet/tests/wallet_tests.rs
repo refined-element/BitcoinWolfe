@@ -22,7 +22,12 @@ fn create_new_returns_wallet_and_mnemonic() {
     // Mnemonic should be 12 words
     let mnemonic_str = mnemonic.to_string();
     let words: Vec<&str> = mnemonic_str.split_whitespace().collect();
-    assert_eq!(words.len(), 12, "expected 12-word mnemonic, got {}", words.len());
+    assert_eq!(
+        words.len(),
+        12,
+        "expected 12-word mnemonic, got {}",
+        words.len()
+    );
 
     // Wallet should have zero balance initially
     let balance = wallet.balance();
@@ -46,10 +51,20 @@ fn create_new_generates_unique_mnemonics() {
 
 #[test]
 fn create_new_works_for_all_networks() {
-    for network in [Network::Bitcoin, Network::Testnet, Network::Signet, Network::Regtest] {
+    for network in [
+        Network::Bitcoin,
+        Network::Testnet,
+        Network::Signet,
+        Network::Regtest,
+    ] {
         let dir = TempDir::new().unwrap();
         let result = NodeWallet::create_new(&dir.path().join("wallet.db"), network);
-        assert!(result.is_ok(), "create_new failed for {:?}: {:?}", network, result.err());
+        assert!(
+            result.is_ok(),
+            "create_new failed for {:?}: {:?}",
+            network,
+            result.err()
+        );
     }
 }
 
@@ -85,7 +100,10 @@ fn change_address_differs_from_receive() {
     let receive = wallet.new_address().unwrap();
     let change = wallet.new_change_address().unwrap();
 
-    assert_ne!(receive, change, "receive and change addresses should differ");
+    assert_ne!(
+        receive, change,
+        "receive and change addresses should differ"
+    );
 }
 
 // ── Mnemonic recovery ───────────────────────────────────────────────────
@@ -95,16 +113,12 @@ fn mnemonic_recovery_produces_same_addresses() {
     use bdk_wallet::keys::{DerivableKey, ExtendedKey};
 
     let dir1 = TempDir::new().unwrap();
-    let (mut wallet1, mnemonic, _) =
-        create_test_wallet_in(&dir1.path().join("w1.db"));
+    let (mut wallet1, mnemonic, _) = create_test_wallet_in(&dir1.path().join("w1.db"));
 
     let addr1 = wallet1.new_address().unwrap();
 
     // Recover from the same mnemonic
-    let xkey: ExtendedKey = mnemonic
-        .clone()
-        .into_extended_key()
-        .unwrap();
+    let xkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
     let xprv = xkey.into_xprv(Network::Regtest).unwrap();
     let ext_desc = format!("wpkh({}/84h/1h/0h/0/*)", xprv);
     let int_desc = format!("wpkh({}/84h/1h/0h/1/*)", xprv);
@@ -120,12 +134,13 @@ fn mnemonic_recovery_produces_same_addresses() {
 
     let addr2 = wallet2.new_address().unwrap();
 
-    assert_eq!(addr1, addr2, "recovered wallet should produce same first address");
+    assert_eq!(
+        addr1, addr2,
+        "recovered wallet should produce same first address"
+    );
 }
 
-fn create_test_wallet_in(
-    db_path: &std::path::Path,
-) -> (NodeWallet, wolfe_wallet::Mnemonic, ()) {
+fn create_test_wallet_in(db_path: &std::path::Path) -> (NodeWallet, wolfe_wallet::Mnemonic, ()) {
     let (wallet, mnemonic) = NodeWallet::create_new(db_path, Network::Regtest).unwrap();
     (wallet, mnemonic, ())
 }
@@ -160,17 +175,14 @@ fn wallet_persists_across_reopen() {
     }
 
     // Reopen with same descriptors
-    let mut wallet2 = NodeWallet::open(
-        &db_path,
-        Network::Regtest,
-        ext_desc,
-        int_desc,
-    )
-    .unwrap();
+    let mut wallet2 = NodeWallet::open(&db_path, Network::Regtest, ext_desc, int_desc).unwrap();
 
     // Next address should be index 2 (0 and 1 already revealed)
     let addr3 = wallet2.new_address().unwrap();
-    assert!(addr3.starts_with("bcrt1"), "reopened wallet should still work");
+    assert!(
+        addr3.starts_with("bcrt1"),
+        "reopened wallet should still work"
+    );
 }
 
 // ── fund_channel tests ──────────────────────────────────────────────────
@@ -179,19 +191,24 @@ fn wallet_persists_across_reopen() {
 fn fund_channel_fails_with_no_funds() {
     let (mut wallet, _, _dir) = create_test_wallet();
 
-    let script = bdk_wallet::bitcoin::ScriptBuf::new_p2wsh(
-        &bdk_wallet::bitcoin::hashes::Hash::all_zeros(),
-    );
+    let script =
+        bdk_wallet::bitcoin::ScriptBuf::new_p2wsh(&bdk_wallet::bitcoin::hashes::Hash::all_zeros());
     let fee_rate = bdk_wallet::bitcoin::FeeRate::from_sat_per_vb(2).unwrap();
 
     let result = wallet.fund_channel(script, 100_000, fee_rate);
-    assert!(result.is_err(), "fund_channel should fail with empty wallet");
+    assert!(
+        result.is_err(),
+        "fund_channel should fail with empty wallet"
+    );
 
     // Should be a BDK error about insufficient funds
     let err = result.unwrap_err();
     let msg = format!("{}", err);
     assert!(
-        msg.contains("fund") || msg.contains("insufficient") || msg.contains("Insufficient") || msg.contains("build"),
+        msg.contains("fund")
+            || msg.contains("insufficient")
+            || msg.contains("Insufficient")
+            || msg.contains("build"),
         "expected funding/insufficient error, got: {}",
         msg
     );
@@ -201,9 +218,8 @@ fn fund_channel_fails_with_no_funds() {
 fn fund_channel_rejects_zero_amount() {
     let (mut wallet, _, _dir) = create_test_wallet();
 
-    let script = bdk_wallet::bitcoin::ScriptBuf::new_p2wsh(
-        &bdk_wallet::bitcoin::hashes::Hash::all_zeros(),
-    );
+    let script =
+        bdk_wallet::bitcoin::ScriptBuf::new_p2wsh(&bdk_wallet::bitcoin::hashes::Hash::all_zeros());
     let fee_rate = bdk_wallet::bitcoin::FeeRate::from_sat_per_vb(1).unwrap();
 
     // BDK should reject a zero-value output

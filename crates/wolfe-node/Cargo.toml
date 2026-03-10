@@ -19,6 +19,7 @@ wolfe-rpc = { workspace = true }
 wolfe-wallet = { workspace = true }
 wolfe-store = { workspace = true }
 wolfe-nostr = { workspace = true }
+nostr-sdk = { workspace = true }
 wolfe-lightning = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }

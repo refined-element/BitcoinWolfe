@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+use nostr_sdk::ToBech32;
 use wolfe_lightning::LightningManager;
 use wolfe_mempool::Mempool;
 use wolfe_nostr::{NostrBridge, NostrEvent, NostrSender};
@@ -435,6 +436,7 @@ async fn main() -> Result<()> {
         mempool.clone(),
     );
     node_state.set_shutdown_flag(shutdown.clone());
+    node_state.set_l402_config(config.l402.clone());
     if let Some(ref engine) = consensus_engine {
         node_state.set_consensus(engine.clone());
     }
@@ -444,6 +446,21 @@ async fn main() -> Result<()> {
     }
     if let Some(ref ln) = lightning_manager {
         rpc_state.set_lightning(ln.clone());
+
+        // Share paid_invoices between Lightning event handler and L402 middleware
+        rpc_state.set_paid_invoices(ln.paid_invoices());
+
+        // Derive L402 secret from Lightning seed
+        if config.l402.enabled {
+            if let Some(seed) = ln.seed() {
+                let l402_secret = wolfe_rpc::l402::derive_l402_secret(&seed);
+                rpc_state.set_l402_secret(l402_secret);
+                info!(
+                    "L402 paywall enabled ({} sats/request)",
+                    config.l402.price_sats
+                );
+            }
+        }
     }
 
     if config.rpc.enabled {
@@ -468,13 +485,16 @@ async fn main() -> Result<()> {
         )
         .await
         {
-            Ok((bridge, sender)) => {
+            Ok((bridge, sender, nostr_client)) => {
                 info!(
                     relays = config.nostr.relays.len(),
                     block_announcements = config.nostr.block_announcements,
                     fee_oracle = config.nostr.fee_oracle,
                     "Nostr bridge initialized"
                 );
+                let npub = bridge.public_key().to_bech32().unwrap_or_default();
+                rpc_state.set_nostr_client(nostr_client);
+                rpc_state.set_nostr_pubkey(npub);
                 tokio::spawn(async move {
                     bridge.run().await;
                 });

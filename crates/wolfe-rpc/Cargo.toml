@@ -26,3 +26,5 @@ hex = { workspace = true }
 parking_lot = { workspace = true }
 wolfe-nostr = { workspace = true }
 nostr-sdk = { workspace = true }
+dashmap = { workspace = true }
+lightning-invoice = { workspace = true }

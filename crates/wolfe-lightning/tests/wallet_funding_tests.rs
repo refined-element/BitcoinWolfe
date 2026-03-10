@@ -114,8 +114,7 @@ fn close_channel_fails_for_nonexistent_channel() {
 
     let fake_channel_id = lightning::ln::types::ChannelId([0u8; 32]);
     let fake_counterparty = bitcoin::secp256k1::PublicKey::from_slice(
-        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619")
-            .unwrap(),
+        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap(),
     )
     .unwrap();
 
@@ -137,14 +136,16 @@ fn force_close_fails_for_nonexistent_channel() {
 
     let fake_channel_id = lightning::ln::types::ChannelId([1u8; 32]);
     let fake_counterparty = bitcoin::secp256k1::PublicKey::from_slice(
-        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619")
-            .unwrap(),
+        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap(),
     )
     .unwrap();
 
     // Force close of non-existent channel should also fail
     let result = mgr.close_channel(fake_channel_id, fake_counterparty, true);
-    assert!(result.is_err(), "force-closing nonexistent channel should fail");
+    assert!(
+        result.is_err(),
+        "force-closing nonexistent channel should fail"
+    );
 }
 
 // ── open_channel + wallet wiring ────────────────────────────────────────
@@ -156,8 +157,7 @@ fn open_channel_with_wallet_set_still_fails_for_unknown_peer() {
     mgr.set_wallet(wallet);
 
     let random_key = bitcoin::secp256k1::PublicKey::from_slice(
-        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619")
-            .unwrap(),
+        &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap(),
     )
     .unwrap();
 

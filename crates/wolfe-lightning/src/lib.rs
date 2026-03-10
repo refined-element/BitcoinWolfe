@@ -85,6 +85,9 @@ pub struct LightningManager {
     has_channels: AtomicBool,
     network: bitcoin::Network,
     wallet: Mutex<Option<Arc<Mutex<NodeWallet>>>>,
+    seed: [u8; 32],
+    /// Shared set of claimed payment hashes for L402 verification.
+    paid_invoices: Arc<dashmap::DashMap<[u8; 32], u64>>,
 }
 
 impl LightningManager {
@@ -298,6 +301,8 @@ impl LightningManager {
                 has_channels,
                 network,
                 wallet: Mutex::new(None),
+                seed,
+                paid_invoices: Arc::new(dashmap::DashMap::new()),
             },
             sender,
             broadcast_rx,
@@ -395,6 +400,16 @@ impl LightningManager {
     /// Get the node's public key.
     pub fn node_id(&self) -> bitcoin::secp256k1::PublicKey {
         self.channel_manager.get_our_node_id()
+    }
+
+    /// Get the Lightning seed (for L402 secret derivation).
+    pub fn seed(&self) -> Option<[u8; 32]> {
+        Some(self.seed)
+    }
+
+    /// Get the shared paid_invoices map for L402 verification.
+    pub fn paid_invoices(&self) -> Arc<dashmap::DashMap<[u8; 32], u64>> {
+        self.paid_invoices.clone()
     }
 
     /// Get the channel manager (for RPC handlers).
@@ -563,6 +578,7 @@ impl LightningManager {
             config: self.config.clone(),
             wallet,
             network: self.network,
+            paid_invoices: self.paid_invoices.clone(),
         };
 
         // Process channel manager events

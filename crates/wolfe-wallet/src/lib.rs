@@ -119,10 +119,7 @@ impl NodeWallet {
     /// Create a new wallet with auto-generated BIP39 mnemonic and BIP84 descriptors.
     ///
     /// Returns `(wallet, mnemonic)` so the caller can display/store the seed phrase.
-    pub fn create_new(
-        db_path: &Path,
-        network: Network,
-    ) -> Result<(Self, Mnemonic), WalletError> {
+    pub fn create_new(db_path: &Path, network: Network) -> Result<(Self, Mnemonic), WalletError> {
         let generated: bdk_wallet::keys::GeneratedKey<Mnemonic, bdk_wallet::miniscript::Tap> =
             Mnemonic::generate((WordCount::Words12, Language::English))
                 .map_err(|e| WalletError::Bdk(format!("mnemonic generation: {:?}", e)))?;
@@ -280,7 +277,10 @@ impl NodeWallet {
     ) -> Result<bdk_wallet::bitcoin::Transaction, WalletError> {
         let mut builder = self.wallet.build_tx();
         builder
-            .add_recipient(output_script, bdk_wallet::bitcoin::Amount::from_sat(channel_value_sats))
+            .add_recipient(
+                output_script,
+                bdk_wallet::bitcoin::Amount::from_sat(channel_value_sats),
+            )
             .fee_rate(fee_rate);
 
         let mut psbt = builder
@@ -292,15 +292,19 @@ impl NodeWallet {
             ..Default::default()
         };
 
-        let finalized = self.wallet
+        let finalized = self
+            .wallet
             .sign(&mut psbt, sign_opts)
             .map_err(|e| WalletError::Signing(format!("funding tx signing: {}", e)))?;
 
         if !finalized {
-            return Err(WalletError::Signing("funding tx not fully signed".to_string()));
+            return Err(WalletError::Signing(
+                "funding tx not fully signed".to_string(),
+            ));
         }
 
-        let tx = psbt.extract_tx()
+        let tx = psbt
+            .extract_tx()
             .map_err(|e| WalletError::Bdk(format!("failed to extract tx: {}", e)))?;
 
         self.persist()?;

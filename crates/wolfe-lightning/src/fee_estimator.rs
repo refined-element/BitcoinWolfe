@@ -86,9 +86,9 @@ impl FeeEstimator for WolfeFeeEstimator {
             ConfirmationTarget::MaximumFeeEstimate => 50_000, // 200 sat/vB
             ConfirmationTarget::UrgentOnChainSweep => 5_000,  // 20 sat/vB
             ConfirmationTarget::NonAnchorChannelFee => 253, // 1 sat/vB — commitment tx fee is locked at open
-            ConfirmationTarget::AnchorChannelFee => 1_000,    // 4 sat/vB
+            ConfirmationTarget::AnchorChannelFee => 1_000,  // 4 sat/vB
             ConfirmationTarget::ChannelCloseMinimum => 1_000, // 4 sat/vB
-            _ => 253,                                         // 1 sat/vB minimum
+            _ => 253,                                       // 1 sat/vB minimum
         };
 
         std::cmp::max(sat_per_kw, floor)
