@@ -8,7 +8,7 @@ pub use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::keys::bip39::{Language, WordCount};
 use bdk_wallet::keys::{DerivableKey, ExtendedKey, GeneratableKey};
 use bdk_wallet::{KeychainKind, PersistedWallet};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::error::WalletError;
 
@@ -146,13 +146,34 @@ impl NodeWallet {
         let external_descriptor = format!("wpkh({}/84h/{}h/0h/0/*)", xprv, coin_type);
         let internal_descriptor = format!("wpkh({}/84h/{}h/0h/1/*)", xprv, coin_type);
 
-        warn!("=======================================================");
-        warn!("  NEW WALLET CREATED — BACKUP YOUR SEED PHRASE:");
-        warn!("  {}", mnemonic);
-        warn!("=======================================================");
-
         let wallet = Self::open(db_path, network, external_descriptor, internal_descriptor)?;
         Ok((wallet, mnemonic))
+    }
+
+    /// Import a wallet from an existing BIP39 mnemonic with BIP84 descriptors.
+    pub fn from_mnemonic(
+        db_path: &Path,
+        network: Network,
+        mnemonic: &Mnemonic,
+    ) -> Result<Self, WalletError> {
+        let xkey: ExtendedKey = mnemonic
+            .clone()
+            .into_extended_key()
+            .map_err(|e| WalletError::Bdk(format!("key derivation: {}", e)))?;
+
+        let xprv = xkey
+            .into_xprv(network)
+            .ok_or_else(|| WalletError::Bdk("failed to derive xprv".to_string()))?;
+
+        let coin_type = match network {
+            Network::Bitcoin => 0,
+            _ => 1,
+        };
+
+        let external_descriptor = format!("wpkh({}/84h/{}h/0h/0/*)", xprv, coin_type);
+        let internal_descriptor = format!("wpkh({}/84h/{}h/0h/1/*)", xprv, coin_type);
+
+        Self::open(db_path, network, external_descriptor, internal_descriptor)
     }
 
     /// Get a new receiving address.
@@ -201,6 +222,32 @@ impl NodeWallet {
         Ok(())
     }
 
+    /// Apply a block during rescan, connecting it to the chain via genesis
+    /// even if the wallet has no checkpoint near this height.
+    pub fn rescan_block(
+        &mut self,
+        block: &bitcoin::Block,
+        height: u32,
+        network: Network,
+    ) -> Result<(), WalletError> {
+        let bdk_block: bdk_wallet::bitcoin::Block =
+            bitcoin::consensus::deserialize(&bitcoin::consensus::serialize(block))
+                .map_err(|e| WalletError::Bdk(format!("block conversion: {}", e)))?;
+
+        let genesis_hash = bdk_wallet::bitcoin::constants::genesis_block(network).block_hash();
+        let connected_to = bdk_wallet::chain::BlockId {
+            height: 0,
+            hash: genesis_hash,
+        };
+
+        self.wallet
+            .apply_block_connected_to(&bdk_block, height, connected_to)
+            .map_err(|e| WalletError::Bdk(format!("rescan block {}: {}", height, e)))?;
+
+        self.persist()?;
+        Ok(())
+    }
+
     /// Apply unconfirmed transactions from the mempool.
     pub fn apply_unconfirmed_txs<I>(&mut self, txs: I) -> Result<(), WalletError>
     where
@@ -240,9 +287,18 @@ impl NodeWallet {
             .finish()
             .map_err(|e| WalletError::Bdk(format!("failed to build funding tx: {}", e)))?;
 
-        self.wallet
-            .sign(&mut psbt, bdk_wallet::SignOptions::default())
+        let sign_opts = bdk_wallet::SignOptions {
+            trust_witness_utxo: true,
+            ..Default::default()
+        };
+
+        let finalized = self.wallet
+            .sign(&mut psbt, sign_opts)
             .map_err(|e| WalletError::Signing(format!("funding tx signing: {}", e)))?;
+
+        if !finalized {
+            return Err(WalletError::Signing("funding tx not fully signed".to_string()));
+        }
 
         let tx = psbt.extract_tx()
             .map_err(|e| WalletError::Bdk(format!("failed to extract tx: {}", e)))?;

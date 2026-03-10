@@ -22,6 +22,8 @@ use crate::handlers;
 /// Shared node state accessible from RPC handlers.
 pub struct NodeState {
     pub chain: String,
+    pub network: bitcoin::Network,
+    pub wallet_db_path: std::path::PathBuf,
     pub mempool: Arc<Mempool>,
     peer_infos: parking_lot::RwLock<Vec<wolfe_types::PeerInfoSnapshot>>,
     pub started_at: Instant,
@@ -31,14 +33,21 @@ pub struct NodeState {
     syncing: AtomicBool,
     shutdown: Option<Arc<AtomicBool>>,
     consensus: Option<Arc<ConsensusEngine>>,
-    wallet: Option<Arc<std::sync::Mutex<NodeWallet>>>,
-    lightning: Option<Arc<LightningManager>>,
+    wallet: parking_lot::RwLock<Option<Arc<std::sync::Mutex<NodeWallet>>>>,
+    lightning: parking_lot::RwLock<Option<Arc<LightningManager>>>,
 }
 
 impl NodeState {
-    pub fn new(chain: String, mempool: Arc<Mempool>) -> Self {
+    pub fn new(
+        chain: String,
+        network: bitcoin::Network,
+        wallet_db_path: std::path::PathBuf,
+        mempool: Arc<Mempool>,
+    ) -> Self {
         Self {
             chain,
+            network,
+            wallet_db_path,
             mempool,
             peer_infos: parking_lot::RwLock::new(Vec::new()),
             started_at: Instant::now(),
@@ -48,8 +57,8 @@ impl NodeState {
             syncing: AtomicBool::new(true),
             shutdown: None,
             consensus: None,
-            wallet: None,
-            lightning: None,
+            wallet: parking_lot::RwLock::new(None),
+            lightning: parking_lot::RwLock::new(None),
         }
     }
 
@@ -61,20 +70,20 @@ impl NodeState {
         self.consensus.as_ref()
     }
 
-    pub fn set_wallet(&mut self, wallet: Arc<std::sync::Mutex<NodeWallet>>) {
-        self.wallet = Some(wallet);
+    pub fn set_wallet(&self, wallet: Arc<std::sync::Mutex<NodeWallet>>) {
+        *self.wallet.write() = Some(wallet);
     }
 
-    pub fn wallet(&self) -> Option<&Arc<std::sync::Mutex<NodeWallet>>> {
-        self.wallet.as_ref()
+    pub fn wallet(&self) -> Option<Arc<std::sync::Mutex<NodeWallet>>> {
+        self.wallet.read().clone()
     }
 
-    pub fn set_lightning(&mut self, manager: Arc<LightningManager>) {
-        self.lightning = Some(manager);
+    pub fn set_lightning(&self, manager: Arc<LightningManager>) {
+        *self.lightning.write() = Some(manager);
     }
 
-    pub fn lightning(&self) -> Option<&Arc<LightningManager>> {
-        self.lightning.as_ref()
+    pub fn lightning(&self) -> Option<Arc<LightningManager>> {
+        self.lightning.read().clone()
     }
 
     pub fn set_shutdown_flag(&mut self, flag: Arc<AtomicBool>) {

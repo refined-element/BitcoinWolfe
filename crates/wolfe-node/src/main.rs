@@ -230,9 +230,11 @@ async fn main() -> Result<()> {
                 info!("loading existing wallet from {:?}", wallet_db);
                 NodeWallet::load_existing(&wallet_db, network)
             } else {
-                // First run — auto-generate a new wallet with BIP39 mnemonic
-                info!("no wallet descriptors provided — generating new wallet");
-                NodeWallet::create_new(&wallet_db, network).map(|(w, _mnemonic)| w)
+                // No wallet yet — user must create one via RPC
+                warn!("wallet enabled but no wallet found — create one with: createwallet");
+                Err(wolfe_wallet::error::WalletError::Bdk(
+                    "no wallet — use createwallet RPC".to_string(),
+                ))
             }
         } else {
             let ext_desc = config.wallet.external_descriptor.clone();
@@ -425,18 +427,24 @@ async fn main() -> Result<()> {
     }
 
     // ── Initialize RPC server ───────────────────────────────────────────
-    let mut node_state = NodeState::new(config.network.chain.clone(), mempool.clone());
+    let wallet_db_path = data_dir.join(&config.wallet.db_path);
+    let mut node_state = NodeState::new(
+        config.network.chain.clone(),
+        network,
+        wallet_db_path,
+        mempool.clone(),
+    );
     node_state.set_shutdown_flag(shutdown.clone());
     if let Some(ref engine) = consensus_engine {
         node_state.set_consensus(engine.clone());
     }
+    let rpc_state = Arc::new(node_state);
     if let Some(ref w) = wallet {
-        node_state.set_wallet(w.clone());
+        rpc_state.set_wallet(w.clone());
     }
     if let Some(ref ln) = lightning_manager {
-        node_state.set_lightning(ln.clone());
+        rpc_state.set_lightning(ln.clone());
     }
-    let rpc_state = Arc::new(node_state);
 
     if config.rpc.enabled {
         let rpc_server = RpcServer::new(config.rpc.clone(), rpc_state.clone())

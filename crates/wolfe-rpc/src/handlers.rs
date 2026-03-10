@@ -640,6 +640,122 @@ async fn dispatch_rpc(
             Ok(json!({ "payment_id": payment_id }))
         }
 
+        "createwallet" => {
+            // Error if wallet already exists
+            if state.wallet().is_some() {
+                return Err(RpcError::Wallet("wallet already loaded".to_string()));
+            }
+
+            let (wallet, mnemonic) = wolfe_wallet::NodeWallet::create_new(
+                &state.wallet_db_path,
+                state.network,
+            )
+            .map_err(|e| RpcError::Wallet(format!("wallet creation failed: {}", e)))?;
+
+            let wallet = Arc::new(std::sync::Mutex::new(wallet));
+
+            // Inject wallet into NodeState
+            state.set_wallet(wallet.clone());
+
+            // Inject wallet into Lightning manager if available
+            if let Some(ln) = state.lightning() {
+                ln.set_wallet(wallet);
+            }
+
+            Ok(json!({
+                "mnemonic": mnemonic.to_string(),
+                "message": "BACKUP THIS SEED PHRASE — it will NOT be shown again"
+            }))
+        }
+
+        "importwallet" => {
+            // Error if wallet already exists
+            if state.wallet().is_some() {
+                return Err(RpcError::Wallet("wallet already loaded — stop node, delete wallet DB, then retry".to_string()));
+            }
+
+            let mnemonic_str = get_param_str(params, 0)
+                .ok_or_else(|| RpcError::InvalidParams("missing mnemonic seed phrase".to_string()))?;
+
+            let mnemonic: wolfe_wallet::Mnemonic = mnemonic_str
+                .parse()
+                .map_err(|e| RpcError::InvalidParams(format!("invalid mnemonic: {}", e)))?;
+
+            let wallet = wolfe_wallet::NodeWallet::from_mnemonic(
+                &state.wallet_db_path,
+                state.network,
+                &mnemonic,
+            )
+            .map_err(|e| RpcError::Wallet(format!("wallet import failed: {}", e)))?;
+
+            let wallet = Arc::new(std::sync::Mutex::new(wallet));
+
+            // Inject wallet into NodeState
+            state.set_wallet(wallet.clone());
+
+            // Inject wallet into Lightning manager if available
+            if let Some(ln) = state.lightning() {
+                ln.set_wallet(wallet);
+            }
+
+            Ok(json!({
+                "message": "wallet imported successfully — rescan will happen as blocks sync"
+            }))
+        }
+
+        "rescanblockchain" => {
+            let wallet = state
+                .wallet()
+                .ok_or_else(|| RpcError::Wallet("wallet not loaded".to_string()))?;
+            let engine = state
+                .consensus()
+                .ok_or_else(|| RpcError::Internal("consensus engine not available".to_string()))?;
+
+            let chain_height = engine.chain_height();
+            if chain_height <= 0 {
+                return Err(RpcError::Internal("chain not synced yet".to_string()));
+            }
+            let tip = chain_height as u32;
+
+            let start = get_param_i64(params, 0).unwrap_or(0) as u32;
+            let stop = get_param_i64(params, 1).map(|v| v as u32).unwrap_or(tip);
+
+            let mut scanned = 0u32;
+            let mut found_txs = 0usize;
+
+            for height in start..=stop {
+                let kernel_block = engine
+                    .read_block_data_at_height(height)
+                    .map_err(|e| RpcError::Internal(format!("block read at {}: {}", height, e)))?;
+                let bytes = kernel_block
+                    .consensus_encode()
+                    .map_err(|e| RpcError::Internal(format!("block encode at {}: {}", height, e)))?;
+                let block: bitcoin::Block = deserialize(&bytes)
+                    .map_err(|e| RpcError::Internal(format!("block deserialize at {}: {}", height, e)))?;
+
+                let mut w = wallet
+                    .lock()
+                    .map_err(|e| RpcError::Wallet(format!("wallet lock: {}", e)))?;
+
+                let before = w.list_transactions().len();
+                if let Err(e) = w.rescan_block(&block, height, state.network) {
+                    tracing::warn!(height, ?e, "rescan: wallet failed to process block");
+                }
+                let after = w.list_transactions().len();
+                if after > before {
+                    found_txs += after - before;
+                }
+                scanned += 1;
+            }
+
+            Ok(json!({
+                "start_height": start,
+                "stop_height": stop,
+                "blocks_scanned": scanned,
+                "transactions_found": found_txs,
+            }))
+        }
+
         "uptime" => {
             let uptime = state.started_at.elapsed().as_secs();
             Ok(json!(uptime))

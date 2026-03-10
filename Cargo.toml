@@ -91,3 +91,6 @@ wolfe-wallet = { path = "crates/wolfe-wallet" }
 wolfe-store = { path = "crates/wolfe-store" }
 wolfe-nostr = { path = "crates/wolfe-nostr" }
 wolfe-lightning = { path = "crates/wolfe-lightning" }
+
+[patch.crates-io]
+lightning = { path = "deps/lightning-0.2.2" }

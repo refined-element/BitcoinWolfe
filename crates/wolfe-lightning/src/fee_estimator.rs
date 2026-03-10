@@ -61,8 +61,8 @@ impl FeeEstimator for WolfeFeeEstimator {
             // Medium priority: anchor channel fee bumping
             ConfirmationTarget::AnchorChannelFee => self.sample_fee_rate_sat_per_vb(0.5),
 
-            // Normal priority: non-anchor channel close
-            ConfirmationTarget::NonAnchorChannelFee => self.sample_fee_rate_sat_per_vb(0.3),
+            // Normal priority: non-anchor channel commitment fee (locked at open)
+            ConfirmationTarget::NonAnchorChannelFee => 1.0,
 
             // Low priority: channel close minimum
             ConfirmationTarget::ChannelCloseMinimum => self.sample_fee_rate_sat_per_vb(0.9),
@@ -85,7 +85,7 @@ impl FeeEstimator for WolfeFeeEstimator {
         let floor = match target {
             ConfirmationTarget::MaximumFeeEstimate => 50_000, // 200 sat/vB
             ConfirmationTarget::UrgentOnChainSweep => 5_000,  // 20 sat/vB
-            ConfirmationTarget::NonAnchorChannelFee => 3_000, // 12 sat/vB
+            ConfirmationTarget::NonAnchorChannelFee => 253, // 1 sat/vB — commitment tx fee is locked at open
             ConfirmationTarget::AnchorChannelFee => 1_000,    // 4 sat/vB
             ConfirmationTarget::ChannelCloseMinimum => 1_000, // 4 sat/vB
             _ => 253,                                         // 1 sat/vB minimum
