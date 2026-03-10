@@ -225,9 +225,15 @@ async fn main() -> Result<()> {
         let result = if config.wallet.external_descriptor.is_empty()
             || config.wallet.internal_descriptor.is_empty()
         {
-            // Auto-generate a new wallet with BIP39 mnemonic
-            info!("no wallet descriptors provided — generating new wallet");
-            NodeWallet::create_new(&wallet_db, network).map(|(w, _mnemonic)| w)
+            if wallet_db.exists() {
+                // Wallet DB already exists — load it (descriptors stored inside)
+                info!("loading existing wallet from {:?}", wallet_db);
+                NodeWallet::load_existing(&wallet_db, network)
+            } else {
+                // First run — auto-generate a new wallet with BIP39 mnemonic
+                info!("no wallet descriptors provided — generating new wallet");
+                NodeWallet::create_new(&wallet_db, network).map(|(w, _mnemonic)| w)
+            }
         } else {
             let ext_desc = config.wallet.external_descriptor.clone();
             let int_desc = config.wallet.internal_descriptor.clone();

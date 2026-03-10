@@ -98,6 +98,24 @@ impl NodeWallet {
         Ok(Self { wallet, db })
     }
 
+    /// Load an existing wallet from the database without specifying descriptors.
+    ///
+    /// The descriptors are read from the persisted wallet state. Fails if no
+    /// wallet has been created at this path yet.
+    pub fn load_existing(db_path: &Path, network: Network) -> Result<Self, WalletError> {
+        let mut db = rusqlite::Connection::open(db_path)
+            .map_err(|e| WalletError::Database(e.to_string()))?;
+
+        let wallet = bdk_wallet::Wallet::load()
+            .check_network(network)
+            .load_wallet(&mut db)
+            .map_err(|e| WalletError::Bdk(e.to_string()))?
+            .ok_or_else(|| WalletError::Bdk("no existing wallet found in database".to_string()))?;
+
+        info!("loaded existing wallet from {:?}", db_path);
+        Ok(Self { wallet, db })
+    }
+
     /// Create a new wallet with auto-generated BIP39 mnemonic and BIP84 descriptors.
     ///
     /// Returns `(wallet, mnemonic)` so the caller can display/store the seed phrase.
