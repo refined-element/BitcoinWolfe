@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use wolfe_wallet::NodeWallet;
+
 use bitcoin::block::Header;
 use bitcoin::BlockHash;
 use lightning::chain::chainmonitor::ChainMonitor;
@@ -82,6 +84,7 @@ pub struct LightningManager {
     event_tx: mpsc::Sender<LightningEvent>,
     has_channels: AtomicBool,
     network: bitcoin::Network,
+    wallet: Mutex<Option<Arc<Mutex<NodeWallet>>>>,
 }
 
 impl LightningManager {
@@ -294,6 +297,7 @@ impl LightningManager {
                 event_tx,
                 has_channels,
                 network,
+                wallet: Mutex::new(None),
             },
             sender,
             broadcast_rx,
@@ -408,6 +412,13 @@ impl LightningManager {
         &self.network_graph
     }
 
+    /// Inject a wallet for channel funding. Called after both wallet and
+    /// Lightning are initialized (they have independent lifetimes).
+    pub fn set_wallet(&self, wallet: Arc<Mutex<NodeWallet>>) {
+        *self.wallet.lock().unwrap() = Some(wallet);
+        info!("wallet injected into Lightning manager");
+    }
+
     /// Connect to a Lightning peer.
     pub async fn connect_peer(
         &self,
@@ -458,6 +469,31 @@ impl LightningManager {
             }
             Err(e) => Err(LightningError::Channel(format!("{:?}", e))),
         }
+    }
+
+    /// Close a channel cooperatively or force-close.
+    pub fn close_channel(
+        &self,
+        channel_id: lightning::ln::types::ChannelId,
+        counterparty_node_id: bitcoin::secp256k1::PublicKey,
+        force: bool,
+    ) -> Result<(), LightningError> {
+        if force {
+            self.channel_manager
+                .force_close_broadcasting_latest_txn(
+                    &channel_id,
+                    &counterparty_node_id,
+                    "user-requested force close".to_string(),
+                )
+                .map_err(|e| LightningError::Channel(format!("{:?}", e)))?;
+            info!(%counterparty_node_id, "force-closing channel");
+        } else {
+            self.channel_manager
+                .close_channel(&channel_id, &counterparty_node_id)
+                .map_err(|e| LightningError::Channel(format!("{:?}", e)))?;
+            info!(%counterparty_node_id, "cooperative close initiated");
+        }
+        Ok(())
     }
 
     /// Create a BOLT11 invoice.
@@ -517,6 +553,7 @@ impl LightningManager {
     pub async fn tick(&self) {
         use crate::event_handler::{handle_ldk_event, EventContext};
 
+        let wallet = self.wallet.lock().unwrap().clone();
         let ctx = EventContext {
             channel_manager: self.channel_manager.clone(),
             keys_manager: self.keys_manager.clone(),
@@ -524,6 +561,7 @@ impl LightningManager {
             fee_estimator: self.fee_estimator.clone(),
             kv_store: self.kv_store.clone(),
             config: self.config.clone(),
+            wallet,
             network: self.network,
         };
 

@@ -17,9 +17,11 @@ lightning-invoice = { workspace = true }
 wolfe-types = { workspace = true }
 wolfe-mempool = { workspace = true }
 wolfe-store = { workspace = true }
+wolfe-wallet = { workspace = true }
 
 # Workspace deps
 bitcoin = { workspace = true }
+bdk_wallet = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

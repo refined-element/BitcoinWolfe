@@ -220,27 +220,27 @@ async fn main() -> Result<()> {
 
     // ── Initialize wallet (optional) ────────────────────────────────────
     let wallet: Option<Arc<Mutex<NodeWallet>>> = if config.wallet.enabled {
-        if config.wallet.external_descriptor.is_empty()
+        let wallet_db = data_dir.join(&config.wallet.db_path);
+
+        let result = if config.wallet.external_descriptor.is_empty()
             || config.wallet.internal_descriptor.is_empty()
         {
-            return Err(anyhow::anyhow!(
-                "wallet.enabled=true but no descriptors provided. \
-                 Set wallet.external_descriptor and wallet.internal_descriptor in your config file. \
-                 Example: wpkh(tprv.../84'/1'/0'/0/*) for testnet, wpkh(xprv.../84'/0'/0'/0/*) for mainnet."
-            ));
-        }
+            // Auto-generate a new wallet with BIP39 mnemonic
+            info!("no wallet descriptors provided — generating new wallet");
+            NodeWallet::create_new(&wallet_db, network).map(|(w, _mnemonic)| w)
+        } else {
+            let ext_desc = config.wallet.external_descriptor.clone();
+            let int_desc = config.wallet.internal_descriptor.clone();
+            NodeWallet::open_with_encryption(
+                &wallet_db,
+                network,
+                ext_desc,
+                int_desc,
+                config.wallet.encryption_key.as_deref(),
+            )
+        };
 
-        let wallet_db = data_dir.join(&config.wallet.db_path);
-        let ext_desc = config.wallet.external_descriptor.clone();
-        let int_desc = config.wallet.internal_descriptor.clone();
-
-        match NodeWallet::open_with_encryption(
-            &wallet_db,
-            network,
-            ext_desc,
-            int_desc,
-            config.wallet.encryption_key.as_deref(),
-        ) {
+        match result {
             Ok(w) => {
                 let balance = w.balance();
                 info!(
@@ -301,6 +301,11 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+
+    // ── Inject wallet into Lightning manager ──────────────────────────
+    if let (Some(ref ln), Some(ref w)) = (&lightning_manager, &wallet) {
+        ln.set_wallet(w.clone());
+    }
 
     // ── Catch up Lightning with blocks missed during shutdown ─────────
     if let (Some(ref ln), Some(ref engine)) = (&lightning_manager, &consensus_engine) {

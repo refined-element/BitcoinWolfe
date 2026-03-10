@@ -278,6 +278,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "461b92c4e47b688a92740b204f4580e0a51775df16b67dde1d2db6ede1f0ba09"
 dependencies = [
  "bdk_chain",
+ "bip39",
  "bitcoin",
  "miniscript",
  "rand_core 0.6.4",
@@ -3082,6 +3083,7 @@ dependencies = [
 name = "wolfe-lightning"
 version = "0.1.0"
 dependencies = [
+ "bdk_wallet",
  "bitcoin",
  "hex",
  "lightning",
@@ -3098,6 +3100,7 @@ dependencies = [
  "wolfe-mempool",
  "wolfe-store",
  "wolfe-types",
+ "wolfe-wallet",
 ]
 
 [[package]]
@@ -3176,6 +3179,7 @@ dependencies = [
  "base64 0.22.1",
  "bitcoin",
  "hex",
+ "lightning",
  "nostr-sdk",
  "parking_lot",
  "serde",
@@ -3229,6 +3233,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "wolfe-types",

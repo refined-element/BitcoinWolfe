@@ -7,6 +7,7 @@ description = "REST and JSON-RPC API server for BitcoinWolfe"
 
 [dependencies]
 bitcoin = { workspace = true }
+lightning = { workspace = true }
 wolfe-types = { workspace = true }
 wolfe-mempool = { workspace = true }
 wolfe-consensus = { workspace = true }

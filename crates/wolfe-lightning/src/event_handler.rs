@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use bitcoin::secp256k1::Secp256k1;
 use lightning::chain::chaininterface::BroadcasterInterface;
@@ -6,12 +6,13 @@ use lightning::events::bump_transaction::BumpTransactionEvent;
 use lightning::events::{Event, PaymentPurpose};
 use lightning::sign::{KeysManager, OutputSpender, SignerProvider};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::broadcaster::WolfeBroadcaster;
 use crate::fee_estimator::WolfeFeeEstimator;
 use crate::types::WolfeChannelManager;
 use wolfe_types::config::LightningConfig;
+use wolfe_wallet::NodeWallet;
 
 /// Events emitted by the Lightning subsystem to the main event loop.
 #[derive(Debug)]
@@ -46,6 +47,7 @@ pub(crate) struct EventContext {
     pub fee_estimator: Arc<WolfeFeeEstimator>,
     pub kv_store: Arc<crate::persister::WolfeKVStore>,
     pub config: LightningConfig,
+    pub wallet: Option<Arc<Mutex<NodeWallet>>>,
     #[allow(dead_code)]
     pub network: bitcoin::Network,
 }
@@ -78,19 +80,83 @@ pub(crate) async fn handle_ldk_event(
             temporary_channel_id,
             counterparty_node_id,
             channel_value_satoshis,
+            output_script,
             ..
         } => {
-            // Wallet funding not yet implemented — cancel the channel so it doesn't hang
-            warn!(
-                channel_value = channel_value_satoshis,
-                counterparty = %counterparty_node_id,
-                "FundingGenerationReady: wallet funding not yet implemented, cancelling channel"
+            let Some(ref wallet) = ctx.wallet else {
+                warn!(
+                    channel_value = channel_value_satoshis,
+                    counterparty = %counterparty_node_id,
+                    "FundingGenerationReady: no wallet available, cancelling channel"
+                );
+                let _ = ctx.channel_manager.force_close_broadcasting_latest_txn(
+                    &temporary_channel_id,
+                    &counterparty_node_id,
+                    "no wallet available for funding".to_string(),
+                );
+                return;
+            };
+
+            // Convert output_script from bitcoin to bdk_wallet bitcoin types
+            let bdk_script: bdk_wallet::bitcoin::ScriptBuf =
+                bitcoin::consensus::deserialize(&bitcoin::consensus::serialize(&output_script))
+                    .expect("script round-trip");
+
+            // Use NonAnchorChannelFee target for funding tx fee rate
+            use lightning::chain::chaininterface::FeeEstimator;
+            let sat_per_kw = ctx.fee_estimator.get_est_sat_per_1000_weight(
+                lightning::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee,
             );
-            let _ = ctx.channel_manager.force_close_broadcasting_latest_txn(
-                &temporary_channel_id,
-                &counterparty_node_id,
-                "funding generation not supported yet".to_string(),
-            );
+            // Convert sat/kw to sat/vB: divide by 250
+            let sat_per_vb = std::cmp::max(sat_per_kw / 250, 1) as u64;
+            let fee_rate = bdk_wallet::bitcoin::FeeRate::from_sat_per_vb(sat_per_vb)
+                .unwrap_or(bdk_wallet::bitcoin::FeeRate::from_sat_per_vb(1).unwrap());
+
+            let result = {
+                let mut w = wallet.lock().unwrap();
+                w.fund_channel(bdk_script, channel_value_satoshis, fee_rate)
+            };
+
+            match result {
+                Ok(funding_tx) => {
+                    info!(
+                        txid = %funding_tx.compute_txid(),
+                        channel_value = channel_value_satoshis,
+                        counterparty = %counterparty_node_id,
+                        "funding transaction created"
+                    );
+                    // Convert bdk_wallet Transaction back to bitcoin Transaction
+                    let tx: bitcoin::Transaction =
+                        bitcoin::consensus::deserialize(
+                            &bitcoin::consensus::serialize(&funding_tx),
+                        )
+                        .expect("tx round-trip");
+                    if let Err(e) = ctx.channel_manager.funding_transaction_generated(
+                        temporary_channel_id,
+                        counterparty_node_id,
+                        tx,
+                    ) {
+                        error!(
+                            ?e,
+                            counterparty = %counterparty_node_id,
+                            "failed to provide funding transaction to LDK"
+                        );
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        ?e,
+                        channel_value = channel_value_satoshis,
+                        counterparty = %counterparty_node_id,
+                        "failed to create funding transaction"
+                    );
+                    let _ = ctx.channel_manager.force_close_broadcasting_latest_txn(
+                        &temporary_channel_id,
+                        &counterparty_node_id,
+                        format!("funding generation failed: {}", e),
+                    );
+                }
+            }
         }
 
         Event::OpenChannelRequest {

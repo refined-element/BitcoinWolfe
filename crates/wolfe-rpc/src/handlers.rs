@@ -582,6 +582,33 @@ async fn dispatch_rpc(
             Ok(json!({ "channel_id": channel_id }))
         }
 
+        "ln_closechannel" => {
+            let ln = state
+                .lightning()
+                .ok_or_else(|| RpcError::Lightning("lightning not enabled".to_string()))?;
+
+            let channel_id_hex = get_param_str(params, 0)
+                .ok_or_else(|| RpcError::InvalidParams("missing channel_id".to_string()))?;
+            let counterparty_hex = get_param_str(params, 1)
+                .ok_or_else(|| RpcError::InvalidParams("missing counterparty node_id".to_string()))?;
+            let force = get_param_bool(params, 2).unwrap_or(false);
+
+            let channel_id_bytes: [u8; 32] = hex::decode(channel_id_hex)
+                .map_err(|_| RpcError::InvalidParams("invalid channel_id hex".to_string()))?
+                .try_into()
+                .map_err(|_| RpcError::InvalidParams("channel_id must be 32 bytes".to_string()))?;
+
+            let channel_id = lightning::ln::types::ChannelId(channel_id_bytes);
+            let counterparty: bitcoin::secp256k1::PublicKey = counterparty_hex
+                .parse()
+                .map_err(|e| RpcError::InvalidParams(format!("invalid pubkey: {}", e)))?;
+
+            ln.close_channel(channel_id, counterparty, force)
+                .map_err(|e| RpcError::Lightning(e.to_string()))?;
+
+            Ok(json!({ "closing": true, "force": force }))
+        }
+
         "ln_invoice" => {
             let ln = state
                 .lightning()

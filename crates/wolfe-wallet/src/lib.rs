@@ -4,8 +4,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bdk_wallet::bitcoin::Network;
+pub use bdk_wallet::keys::bip39::Mnemonic;
+use bdk_wallet::keys::bip39::{Language, WordCount};
+use bdk_wallet::keys::{DerivableKey, ExtendedKey, GeneratableKey};
 use bdk_wallet::{KeychainKind, PersistedWallet};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::error::WalletError;
 
@@ -95,6 +98,45 @@ impl NodeWallet {
         Ok(Self { wallet, db })
     }
 
+    /// Create a new wallet with auto-generated BIP39 mnemonic and BIP84 descriptors.
+    ///
+    /// Returns `(wallet, mnemonic)` so the caller can display/store the seed phrase.
+    pub fn create_new(
+        db_path: &Path,
+        network: Network,
+    ) -> Result<(Self, Mnemonic), WalletError> {
+        let generated: bdk_wallet::keys::GeneratedKey<Mnemonic, bdk_wallet::miniscript::Tap> =
+            Mnemonic::generate((WordCount::Words12, Language::English))
+                .map_err(|e| WalletError::Bdk(format!("mnemonic generation: {:?}", e)))?;
+
+        let mnemonic = generated.into_key();
+
+        let xkey: ExtendedKey = mnemonic
+            .clone()
+            .into_extended_key()
+            .map_err(|e| WalletError::Bdk(format!("key derivation: {}", e)))?;
+
+        let xprv = xkey
+            .into_xprv(network)
+            .ok_or_else(|| WalletError::Bdk("failed to derive xprv".to_string()))?;
+
+        let coin_type = match network {
+            Network::Bitcoin => 0,
+            _ => 1,
+        };
+
+        let external_descriptor = format!("wpkh({}/84h/{}h/0h/0/*)", xprv, coin_type);
+        let internal_descriptor = format!("wpkh({}/84h/{}h/0h/1/*)", xprv, coin_type);
+
+        warn!("=======================================================");
+        warn!("  NEW WALLET CREATED — BACKUP YOUR SEED PHRASE:");
+        warn!("  {}", mnemonic);
+        warn!("=======================================================");
+
+        let wallet = Self::open(db_path, network, external_descriptor, internal_descriptor)?;
+        Ok((wallet, mnemonic))
+    }
+
     /// Get a new receiving address.
     pub fn new_address(&mut self) -> Result<String, WalletError> {
         let addr_info = self.wallet.reveal_next_address(KeychainKind::External);
@@ -159,6 +201,36 @@ impl NodeWallet {
 
         self.persist()?;
         Ok(())
+    }
+
+    /// Create a funding transaction for a Lightning channel.
+    ///
+    /// Builds, signs, and returns a transaction paying `channel_value_sats` to the
+    /// given `output_script` (provided by LDK's `FundingGenerationReady` event).
+    pub fn fund_channel(
+        &mut self,
+        output_script: bdk_wallet::bitcoin::ScriptBuf,
+        channel_value_sats: u64,
+        fee_rate: bdk_wallet::bitcoin::FeeRate,
+    ) -> Result<bdk_wallet::bitcoin::Transaction, WalletError> {
+        let mut builder = self.wallet.build_tx();
+        builder
+            .add_recipient(output_script, bdk_wallet::bitcoin::Amount::from_sat(channel_value_sats))
+            .fee_rate(fee_rate);
+
+        let mut psbt = builder
+            .finish()
+            .map_err(|e| WalletError::Bdk(format!("failed to build funding tx: {}", e)))?;
+
+        self.wallet
+            .sign(&mut psbt, bdk_wallet::SignOptions::default())
+            .map_err(|e| WalletError::Signing(format!("funding tx signing: {}", e)))?;
+
+        let tx = psbt.extract_tx()
+            .map_err(|e| WalletError::Bdk(format!("failed to extract tx: {}", e)))?;
+
+        self.persist()?;
+        Ok(tx)
     }
 
     /// Create a PSBT sending to the given address with the given amount (in satoshis).

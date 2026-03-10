@@ -29,7 +29,7 @@ bip324 = { version = "0.10", features = ["tokio"] }
 bitcoinkernel = "0.2"
 
 # Wallet (BDK)
-bdk_wallet = { version = "1.1", features = ["rusqlite"] }
+bdk_wallet = { version = "1.1", features = ["rusqlite", "keys-bip39"] }
 
 # Nostr
 nostr-sdk = "0.39"
