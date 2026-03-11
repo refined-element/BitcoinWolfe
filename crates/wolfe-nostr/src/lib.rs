@@ -45,6 +45,8 @@ pub struct NostrBridge {
     mempool: Arc<Mempool>,
     fee_oracle_interval_secs: u64,
     keys: Keys,
+    profile_name: Option<String>,
+    profile_about: Option<String>,
 }
 
 /// Handle for sending events to the Nostr bridge from the main loop.
@@ -76,6 +78,8 @@ impl NostrBridge {
         network: String,
         mempool: Arc<Mempool>,
         fee_oracle_interval_secs: u64,
+        profile_name: Option<String>,
+        profile_about: Option<String>,
     ) -> Result<(Self, NostrSender, Arc<Client>), NostrError> {
         let keys = match secret_key {
             Some(sk) => Keys::parse(sk).map_err(|e| NostrError::InvalidKey(e.to_string()))?,
@@ -109,6 +113,8 @@ impl NostrBridge {
                 mempool,
                 fee_oracle_interval_secs,
                 keys,
+                profile_name,
+                profile_about,
             },
             NostrSender { tx },
             shared_client,
@@ -133,6 +139,29 @@ impl NostrBridge {
             npub = %self.keys.public_key().to_bech32().unwrap_or_default(),
             "nostr bridge connected to relays"
         );
+
+        // Publish profile metadata (NIP-01 kind 0) if configured
+        if self.profile_name.is_some() || self.profile_about.is_some() {
+            let mut metadata = Metadata::new();
+            if let Some(ref name) = self.profile_name {
+                metadata = metadata.name(name);
+            }
+            if let Some(ref about) = self.profile_about {
+                metadata = metadata.about(about);
+            }
+            match self.client.set_metadata(&metadata).await {
+                Ok(output) => {
+                    info!(
+                        event_id = %output.val,
+                        name = ?self.profile_name,
+                        "published nostr profile metadata"
+                    );
+                }
+                Err(e) => {
+                    warn!(?e, "failed to publish nostr profile metadata");
+                }
+            }
+        }
 
         let mut fee_oracle_interval =
             tokio::time::interval(Duration::from_secs(self.fee_oracle_interval_secs));

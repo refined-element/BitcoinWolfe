@@ -282,6 +282,10 @@ pub struct NostrConfig {
     pub enabled: bool,
     /// Nostr secret key (hex or nsec). If empty, an ephemeral key is generated.
     pub secret_key: Option<String>,
+    /// Profile display name (NIP-01 kind 0 metadata).
+    pub name: Option<String>,
+    /// Profile about/bio text.
+    pub about: Option<String>,
     /// Relay URLs to publish events to.
     pub relays: Vec<String>,
     /// Publish new block announcements to relays.
@@ -368,6 +372,8 @@ impl Default for NostrConfig {
         Self {
             enabled: false,
             secret_key: None,
+            name: None,
+            about: None,
             relays: vec![
                 "wss://relay.damus.io".to_string(),
                 "wss://nos.lol".to_string(),

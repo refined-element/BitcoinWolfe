@@ -482,6 +482,8 @@ async fn main() -> Result<()> {
             config.network.chain.clone(),
             mempool.clone(),
             config.nostr.fee_oracle_interval_secs,
+            config.nostr.name.clone(),
+            config.nostr.about.clone(),
         )
         .await
         {
