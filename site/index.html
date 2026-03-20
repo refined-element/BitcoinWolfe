@@ -1,0 +1,1386 @@
+<!DOCTYPE html>
+<html lang="en" prefix="og: https://ogp.me/ns#">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BitcoinWolfe — A Modern Bitcoin Full Node in Rust</title>
+
+  <!-- Agent-friendly metadata -->
+  <meta name="description" content="BitcoinWolfe is an open-source Bitcoin full node written in Rust. Features libbitcoinkernel consensus, embedded Lightning (LDK), BDK wallet, Nostr integration, L402 API paywalls, BIP324 v2 transport, and Prometheus metrics.">
+  <meta name="keywords" content="bitcoin, full node, rust, lightning network, ldk, bdk, nostr, l402, bip324, open source">
+  <meta name="author" content="BitcoinWolfe Contributors">
+  <meta name="robots" content="index, follow">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="BitcoinWolfe — A Modern Bitcoin Full Node in Rust">
+  <meta property="og:description" content="Open-source Bitcoin full node with embedded Lightning, Nostr integration, L402 micropayment APIs, and BIP324 encrypted transport.">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="BitcoinWolfe">
+  <meta property="og:image" content="https://bitcoinwolfe.com/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="1200">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="BitcoinWolfe — A Modern Bitcoin Full Node in Rust">
+  <meta name="twitter:description" content="Open-source Bitcoin full node with embedded Lightning, Nostr integration, L402 micropayment APIs, and BIP324 encrypted transport.">
+  <meta name="twitter:image" content="https://bitcoinwolfe.com/og-image.png">
+
+  <!-- Structured Data (JSON-LD) for agents and search engines -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "BitcoinWolfe",
+    "applicationCategory": "FinanceApplication",
+    "operatingSystem": "Linux, macOS",
+    "programmingLanguage": "Rust",
+    "license": "https://opensource.org/licenses/MIT",
+    "description": "A modern Bitcoin full node written in Rust featuring libbitcoinkernel consensus validation, embedded Lightning Network node via LDK, BDK descriptor wallet, Nostr event publishing, L402 Lightning-gated API endpoints, BIP324 v2 encrypted P2P transport, and Prometheus-native metrics.",
+    "softwareVersion": "0.1.0",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "featureList": [
+      "libbitcoinkernel consensus validation",
+      "Embedded Lightning Network node (LDK v0.2.2)",
+      "BDK descriptor wallet with BIP39/BIP84",
+      "Nostr block announcements and fee oracle",
+      "L402 Lightning-gated REST API",
+      "NIP-98 Nostr HTTP authentication",
+      "BIP324 v2 encrypted P2P transport",
+      "Bitcoin Core compatible JSON-RPC",
+      "REST API endpoints",
+      "PSBT creation and signing",
+      "Prometheus-native metrics",
+      "Block file pruning",
+      "Header-first sync with resync recovery",
+      "SQLite wallet with optional encryption"
+    ]
+  }
+  </script>
+
+  <!-- llms.txt style metadata for AI agents -->
+  <meta name="ai:project_type" content="Bitcoin full node implementation">
+  <meta name="ai:language" content="Rust">
+  <meta name="ai:architecture" content="10 workspace crates: wolfe-types, wolfe-consensus, wolfe-store, wolfe-p2p, wolfe-mempool, wolfe-wallet, wolfe-rpc, wolfe-node, wolfe-nostr, wolfe-lightning">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+
+  <style>
+    /* ── Design tokens ─────────────────────────────────────────── */
+    :root {
+      --bg-void: #07080a;
+      --bg-surface: #0d0f12;
+      --bg-raised: #141720;
+      --bg-glass: rgba(20, 23, 32, 0.7);
+
+      --border-dim: rgba(255, 153, 0, 0.08);
+      --border-subtle: rgba(255, 153, 0, 0.15);
+      --border-accent: rgba(255, 153, 0, 0.4);
+
+      --text-primary: #e8e4de;
+      --text-secondary: #8a8680;
+      --text-muted: #5a5650;
+      --text-accent: #ff9900;
+      --text-accent-bright: #ffb347;
+
+      --orange-glow: rgba(255, 153, 0, 0.06);
+      --orange-glow-strong: rgba(255, 153, 0, 0.12);
+
+      --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+      --font-body: 'DM Sans', -apple-system, sans-serif;
+      --font-display: 'Instrument Serif', Georgia, serif;
+
+      --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    /* ── Reset & base ──────────────────────────────────────────── */
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg-void);
+      color: var(--text-primary);
+      line-height: 1.65;
+      overflow-x: hidden;
+    }
+
+    ::selection {
+      background: rgba(255, 153, 0, 0.3);
+      color: var(--text-primary);
+    }
+
+    a {
+      color: var(--text-accent);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+    a:hover { color: var(--text-accent-bright); }
+
+    /* ── Ambient background ────────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 60% at 20% 10%, rgba(255, 153, 0, 0.04) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 80% at 80% 90%, rgba(255, 120, 0, 0.03) 0%, transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Noise texture overlay ─────────────────────────────────── */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      opacity: 0.025;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Layout ─────────────────────────────────────────────────── */
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 clamp(1.5rem, 4vw, 3rem);
+      position: relative;
+      z-index: 1;
+    }
+
+    section {
+      padding: clamp(4rem, 8vw, 7rem) 0;
+    }
+
+    /* ── Navigation ────────────────────────────────────────────── */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      backdrop-filter: blur(20px) saturate(1.2);
+      -webkit-backdrop-filter: blur(20px) saturate(1.2);
+      background: rgba(7, 8, 10, 0.8);
+      border-bottom: 1px solid var(--border-dim);
+    }
+
+    .nav-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 clamp(1.5rem, 4vw, 3rem);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 64px;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 1.1rem;
+      color: var(--text-accent);
+      letter-spacing: -0.02em;
+    }
+    .nav-wolf-icon {
+      flex-shrink: 0;
+      border-radius: 8px;
+      box-shadow: 0 0 12px rgba(255, 153, 0, 0.3), 0 0 2px rgba(255, 153, 0, 0.5);
+      border: 1px solid rgba(255, 153, 0, 0.2);
+      transition: box-shadow 0.3s var(--ease-out-expo);
+    }
+    .nav-logo:hover .nav-wolf-icon {
+      box-shadow: 0 0 20px rgba(255, 153, 0, 0.5), 0 0 4px rgba(255, 153, 0, 0.7);
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 2rem;
+      list-style: none;
+    }
+    .nav-links a {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      transition: color 0.25s;
+    }
+    .nav-links a:hover { color: var(--text-accent); }
+
+    .nav-cta {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 0.5rem 1.25rem;
+      border: 1px solid var(--border-accent);
+      color: var(--text-accent);
+      border-radius: 6px;
+      transition: all 0.3s var(--ease-out-expo);
+      background: transparent;
+      cursor: pointer;
+    }
+    .nav-cta:hover {
+      background: rgba(255, 153, 0, 0.1);
+      box-shadow: 0 0 20px rgba(255, 153, 0, 0.15);
+    }
+
+    /* ── Hero ───────────────────────────────────────────────────── */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding-top: 64px;
+      position: relative;
+    }
+
+    .hero-content {
+      max-width: 800px;
+      text-align: center;
+    }
+
+    .hero-wolf-icon {
+      display: block;
+      margin: 0 auto 2.5rem;
+      border-radius: 28px;
+      box-shadow:
+        0 0 60px rgba(255, 153, 0, 0.3),
+        0 0 120px rgba(255, 153, 0, 0.12);
+      border: 2px solid rgba(255, 153, 0, 0.2);
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-accent);
+      background: var(--orange-glow);
+      border: 1px solid var(--border-subtle);
+      padding: 0.4rem 1rem;
+      border-radius: 100px;
+      margin-bottom: 2rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .hero-badge::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      background: var(--text-accent);
+      border-radius: 50%;
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.8); }
+    }
+
+    .hero h1 {
+      font-family: var(--font-display);
+      font-size: clamp(3rem, 8vw, 5.5rem);
+      font-weight: 400;
+      line-height: 1.05;
+      letter-spacing: -0.03em;
+      margin-bottom: 1.5rem;
+      color: var(--text-primary);
+    }
+    .hero h1 em {
+      font-style: italic;
+      color: var(--text-accent);
+    }
+
+    .hero-subtitle {
+      font-size: clamp(1.1rem, 2vw, 1.35rem);
+      color: var(--text-secondary);
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
+      line-height: 1.7;
+      margin-bottom: 2rem;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-bottom: 2.5rem;
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 0.85rem 1.75rem;
+      background: var(--text-accent);
+      color: var(--bg-void);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.3s var(--ease-out-expo);
+      text-decoration: none;
+    }
+    .btn-primary:hover {
+      background: var(--text-accent-bright);
+      color: var(--bg-void);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 30px rgba(255, 153, 0, 0.3);
+    }
+
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      font-weight: 500;
+      padding: 0.85rem 1.75rem;
+      background: transparent;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.3s var(--ease-out-expo);
+      text-decoration: none;
+    }
+    .btn-secondary:hover {
+      color: var(--text-primary);
+      border-color: var(--border-accent);
+      background: var(--orange-glow);
+    }
+
+    /* ── Quick start terminal ──────────────────────────────────── */
+    .hero-terminal {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-dim);
+      border-radius: 12px;
+      overflow: hidden;
+      max-width: 600px;
+      margin: 0 auto;
+      text-align: left;
+    }
+
+    .terminal-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 12px 16px;
+      background: var(--bg-raised);
+      border-bottom: 1px solid var(--border-dim);
+    }
+    .terminal-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      opacity: 0.5;
+    }
+    .terminal-title {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-left: 8px;
+    }
+
+    .terminal-body {
+      padding: 1.25rem 1.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.9;
+    }
+    .terminal-prompt { color: var(--text-accent); }
+    .terminal-cmd { color: var(--text-primary); }
+    .terminal-comment { color: var(--text-muted); }
+    .terminal-output { color: var(--text-secondary); }
+
+    /* ── Section headers ───────────────────────────────────────── */
+    .section-label {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-accent);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 1rem;
+    }
+
+    .section-title {
+      font-family: var(--font-display);
+      font-size: clamp(2rem, 5vw, 3.2rem);
+      font-weight: 400;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+      margin-bottom: 1rem;
+    }
+
+    .section-desc {
+      font-size: 1.1rem;
+      color: var(--text-secondary);
+      max-width: 560px;
+      line-height: 1.7;
+      margin-bottom: 2.5rem;
+    }
+
+    /* ── Architecture overview ─────────────────────────────────── */
+    .arch-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1px;
+      background: var(--border-dim);
+      border: 1px solid var(--border-dim);
+      border-radius: 16px;
+      overflow: hidden;
+    }
+
+    @media (max-width: 640px) {
+      .arch-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .arch-card {
+      background: var(--bg-surface);
+      padding: clamp(1.5rem, 3vw, 2.5rem);
+      position: relative;
+      transition: background 0.4s;
+    }
+    .arch-card:hover {
+      background: var(--bg-raised);
+    }
+
+    .arch-icon {
+      font-size: 1.5rem;
+      margin-bottom: 1rem;
+      display: block;
+    }
+
+    .arch-card h3 {
+      font-family: var(--font-mono);
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin-bottom: 0.6rem;
+      color: var(--text-primary);
+    }
+    .arch-card h3 .tag {
+      font-weight: 400;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-left: 0.5rem;
+      vertical-align: middle;
+    }
+
+    .arch-card p {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .arch-card .tech {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-accent);
+      background: var(--orange-glow);
+      border: 1px solid var(--border-subtle);
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      margin-top: 0.75rem;
+    }
+
+    /* ── Feature showcase ──────────────────────────────────────── */
+    .features-section {
+      border-top: 1px solid var(--border-dim);
+    }
+
+    .feature-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: clamp(2rem, 4vw, 3.5rem);
+      align-items: center;
+      padding: clamp(2.5rem, 4vw, 3.5rem) 0;
+      border-bottom: 1px solid var(--border-dim);
+    }
+    .feature-row:last-child { border-bottom: none; }
+    .feature-row.reverse .feature-text { order: 2; }
+    .feature-row.reverse .feature-visual { order: 1; }
+
+    .feature-text h3 {
+      font-family: var(--font-display);
+      font-size: clamp(1.5rem, 3vw, 2.2rem);
+      font-weight: 400;
+      line-height: 1.2;
+      margin-bottom: 1rem;
+    }
+    .feature-text h3 em {
+      color: var(--text-accent);
+      font-style: italic;
+    }
+
+    .feature-text p {
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+      line-height: 1.7;
+      margin-bottom: 1.25rem;
+    }
+
+    .feature-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .feature-list li {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      padding-left: 1.2rem;
+      position: relative;
+    }
+    .feature-list li::before {
+      content: '>';
+      position: absolute;
+      left: 0;
+      color: var(--text-accent);
+      font-weight: 700;
+    }
+
+    .feature-visual {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-dim);
+      border-radius: 12px;
+      padding: 1.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      line-height: 1.8;
+      overflow-x: auto;
+    }
+    .feature-visual .key { color: var(--text-accent); }
+    .feature-visual .val { color: var(--text-primary); }
+    .feature-visual .str { color: #7ec699; }
+    .feature-visual .num { color: #f08d49; }
+    .feature-visual .comment { color: var(--text-muted); }
+
+    /* ── RPC reference ─────────────────────────────────────────── */
+    .rpc-section {
+      border-top: 1px solid var(--border-dim);
+      padding-top: clamp(5rem, 10vw, 8rem);
+      padding-bottom: clamp(5rem, 10vw, 8rem);
+    }
+
+    .rpc-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .rpc-group {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-dim);
+      border-radius: 12px;
+      padding: 1.75rem;
+    }
+
+    .rpc-group h4 {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-accent);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 1rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border-dim);
+    }
+
+    .rpc-method {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      padding: 0.35rem 0;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .rpc-method::before {
+      content: '';
+      width: 4px;
+      height: 4px;
+      background: var(--text-muted);
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .rpc-method code {
+      color: var(--text-primary);
+    }
+
+    /* ── Stats banner ──────────────────────────────────────────── */
+    .stats-banner {
+      border-top: 1px solid var(--border-dim);
+      border-bottom: 1px solid var(--border-dim);
+      padding: clamp(2rem, 3vw, 3rem) 0;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 2rem;
+      text-align: center;
+    }
+
+    .stat-item h4 {
+      font-family: var(--font-display);
+      font-size: clamp(2.5rem, 5vw, 3.5rem);
+      font-weight: 400;
+      color: var(--text-accent);
+      line-height: 1;
+      margin-bottom: 0.5rem;
+    }
+    .stat-item p {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    /* ── Config showcase ───────────────────────────────────────── */
+    .config-section {
+      border-top: 1px solid var(--border-dim);
+      padding-top: clamp(5rem, 10vw, 8rem);
+      padding-bottom: clamp(5rem, 10vw, 8rem);
+    }
+
+    .config-block {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-dim);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .config-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 1.5rem;
+      background: var(--bg-raised);
+      border-bottom: 1px solid var(--border-dim);
+    }
+    .config-filename {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+    .config-lang {
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .config-body {
+      padding: 1.5rem 1.75rem;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      line-height: 1.9;
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    /* ── CTA section ───────────────────────────────────────────── */
+    .cta-section {
+      border-top: 1px solid var(--border-dim);
+      text-align: center;
+      padding-top: clamp(5rem, 10vw, 8rem);
+      padding-bottom: clamp(5rem, 10vw, 8rem);
+    }
+
+    .cta-section .section-title {
+      max-width: 600px;
+      margin: 0 auto 1rem;
+    }
+
+    .cta-section .section-desc {
+      max-width: 480px;
+      margin: 0 auto 2.5rem;
+    }
+
+    .cta-actions {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    /* ── Footer ────────────────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border-dim);
+      padding: 4rem 0;
+    }
+
+    .footer-inner {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .footer-left {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 1.5rem;
+      list-style: none;
+    }
+    .footer-links a {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      transition: color 0.25s;
+    }
+    .footer-links a:hover { color: var(--text-accent); }
+
+    /* ── Animations ────────────────────────────────────────────── */
+    .reveal {
+      opacity: 0;
+      transform: translateY(30px);
+      transition: opacity 0.8s var(--ease-out-expo), transform 0.8s var(--ease-out-expo);
+    }
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .reveal-delay-1 { transition-delay: 0.1s; }
+    .reveal-delay-2 { transition-delay: 0.2s; }
+    .reveal-delay-3 { transition-delay: 0.3s; }
+
+    /* ── Responsive ────────────────────────────────────────────── */
+    @media (max-width: 768px) {
+      .nav-links { display: none; }
+
+      .feature-row {
+        grid-template-columns: 1fr;
+      }
+      .feature-row.reverse .feature-text { order: 1; }
+      .feature-row.reverse .feature-visual { order: 2; }
+
+      .hero-terminal { max-width: 100%; }
+    }
+
+    /* ── Accessibility ─────────────────────────────────────────── */
+    @media (prefers-reduced-motion: reduce) {
+      .reveal { transition: none; opacity: 1; transform: none; }
+      .hero-badge::before { animation: none; }
+      html { scroll-behavior: auto; }
+    }
+
+    /* ── Focus styles ──────────────────────────────────────────── */
+    :focus-visible {
+      outline: 2px solid var(--text-accent);
+      outline-offset: 3px;
+    }
+
+    /* ── Scrollbar ─────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg-void); }
+    ::-webkit-scrollbar-thumb {
+      background: var(--border-subtle);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border-accent); }
+  </style>
+</head>
+
+<body>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       Navigation
+       ═══════════════════════════════════════════════════════════ -->
+  <nav role="navigation" aria-label="Main navigation">
+    <div class="nav-inner">
+      <a href="#" class="nav-logo" aria-label="BitcoinWolfe home">
+        <img class="nav-wolf-icon" src="wolf-icon.png" alt="BitcoinWolfe logo" width="32" height="32">
+        BitcoinWolfe
+      </a>
+      <ul class="nav-links">
+        <li><a href="#architecture">Architecture</a></li>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#api">API</a></li>
+        <li><a href="#config">Config</a></li>
+      </ul>
+      <a href="https://github.com/refined-element/BitcoinWolfe" class="nav-cta" target="_blank" rel="noopener">View Source</a>
+    </div>
+  </nav>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       Hero
+       ═══════════════════════════════════════════════════════════ -->
+  <section class="hero" id="hero">
+    <div class="container">
+      <div class="hero-content">
+        <img class="hero-wolf-icon reveal" src="wolf-icon.png" alt="BitcoinWolfe" width="160" height="160">
+        <div class="hero-badge reveal reveal-delay-1">Open Source</div>
+
+        <h1 class="reveal reveal-delay-2">A <em>sovereign</em> Bitcoin node, built in Rust</h1>
+
+        <p class="hero-subtitle reveal reveal-delay-2">
+          Full consensus validation, embedded Lightning, Nostr integration, and
+          Lightning-gated APIs &mdash; in a single binary. Verify everything. Trust nothing.
+        </p>
+
+        <div class="hero-actions reveal reveal-delay-3">
+          <a href="https://github.com/refined-element/BitcoinWolfe" class="btn-primary" target="_blank" rel="noopener">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            GitHub
+          </a>
+          <a href="#architecture" class="btn-secondary">Explore Architecture</a>
+        </div>
+
+        <div class="hero-terminal reveal reveal-delay-3">
+          <div class="terminal-bar">
+            <div class="terminal-dot"></div>
+            <div class="terminal-dot"></div>
+            <div class="terminal-dot"></div>
+            <span class="terminal-title">Quick Start</span>
+          </div>
+          <div class="terminal-body">
+            <div><span class="terminal-prompt">$</span> <span class="terminal-cmd">git clone https://github.com/refined-element/BitcoinWolfe.git</span></div>
+            <div><span class="terminal-prompt">$</span> <span class="terminal-cmd">cd BitcoinWolfe && cargo build --release</span></div>
+            <div><span class="terminal-prompt">$</span> <span class="terminal-cmd">./target/release/wolfe</span></div>
+            <div class="terminal-output">INFO starting BitcoinWolfe v0.1.0 chain="mainnet"</div>
+            <div class="terminal-output">INFO consensus engine initialized kernel_height=0</div>
+            <div class="terminal-output">INFO RPC server listening addr="127.0.0.1:8332"</div>
+            <div class="terminal-output">INFO P2P manager started listen="0.0.0.0:8333"</div>
+            <div class="terminal-output">INFO Nostr bridge initialized relays=2</div>
+            <div class="terminal-comment"># Node is running. All systems operational.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       Architecture
+       ═══════════════════════════════════════════════════════════ -->
+  <section id="architecture" class="container" aria-labelledby="arch-heading">
+    <div class="section-label reveal">Architecture</div>
+    <h2 class="section-title reveal" id="arch-heading">Ten crates. One binary.</h2>
+    <p class="section-desc reveal">Modular workspace where each crate does one thing well. Compile what you need, swap what you don't.</p>
+
+    <div class="arch-grid reveal">
+      <article class="arch-card">
+        <span class="arch-icon" aria-hidden="true">&#x26D3;</span>
+        <h3>Consensus <span class="tag">wolfe-consensus</span></h3>
+        <p>Full block validation through libbitcoinkernel &mdash; the same engine that powers Bitcoin Core, extracted as a library.</p>
+        <span class="tech">libbitcoinkernel v0.2</span>
+      </article>
+
+      <article class="arch-card">
+        <span class="arch-icon" aria-hidden="true">&#x26A1;</span>
+        <h3>Lightning <span class="tag">wolfe-lightning</span></h3>
+        <p>Embedded LDK node with channel management, BOLT11 invoices, payment routing, and L402 token generation.</p>
+        <span class="tech">LDK v0.2.2</span>
+      </article>
+
+      <article class="arch-card">
+        <span class="arch-icon" aria-hidden="true">&#x1F511;</span>
+        <h3>Wallet <span class="tag">wolfe-wallet</span></h3>
+        <p>Descriptor-based BDK wallet with BIP39 seed generation, BIP84 native SegWit, PSBT workflows, and optional SQLCipher encryption.</p>
+        <span class="tech">BDK v1.1</span>
+      </article>
+
+      <article class="arch-card">
+        <span class="arch-icon" aria-hidden="true">&#x1F310;</span>
+        <h3>P2P Network <span class="tag">wolfe-p2p</span></h3>
+        <p>Async peer management with BIP324 v2 encrypted transport, DNS seed discovery, and ban tracking.</p>
+        <span class="tech">BIP324 + Tokio</span>
+      </article>
+
+      <article class="arch-card">
+        <span class="arch-icon" aria-hidden="true">&#x1F4E1;</span>
+        <h3>Nostr <span class="tag">wolfe-nostr</span></h3>
+        <p>Publish block announcements and fee oracle data to Nostr relays. NIP-98 event-based authentication for RPC access.</p>
+        <span class="tech">NIP-01 / NIP-98</span>
+      </article>
+
+      <article class="arch-card">
+        <span class="arch-icon" aria-hidden="true">&#x1F4CA;</span>
+        <h3>RPC &amp; REST <span class="tag">wolfe-rpc</span></h3>
+        <p>Bitcoin Core compatible JSON-RPC, REST endpoints, L402 Lightning-gated APIs, and dual auth (Basic + NIP-98).</p>
+        <span class="tech">Axum</span>
+      </article>
+
+      <article class="arch-card">
+        <span class="arch-icon" aria-hidden="true">&#x1F4BE;</span>
+        <h3>Storage <span class="tag">wolfe-store</span></h3>
+        <p>ACID key-value persistence with redb. Headers, peer records, metadata, and Lightning state in separate databases.</p>
+        <span class="tech">redb</span>
+      </article>
+
+      <article class="arch-card">
+        <span class="arch-icon" aria-hidden="true">&#x1F4E6;</span>
+        <h3>Mempool <span class="tag">wolfe-mempool</span></h3>
+        <p>Fee-rate sorted transaction pool with RBF support, size eviction, configurable OP_RETURN policy, and fee histogram.</p>
+        <span class="tech">Full RBF</span>
+      </article>
+
+      <article class="arch-card">
+        <span class="arch-icon" aria-hidden="true">&#x1F9E9;</span>
+        <h3>Types <span class="tag">wolfe-types</span></h3>
+        <p>Shared types, configuration parsing, error definitions, and peer info snapshots used across all crates.</p>
+        <span class="tech">TOML Config</span>
+      </article>
+
+      <article class="arch-card">
+        <span class="arch-icon" aria-hidden="true">&#x2699;</span>
+        <h3>Node <span class="tag">wolfe-node</span></h3>
+        <p>Main binary and event loop orchestrator. Wires all crates together, handles shutdown, progress reporting, and block pruning.</p>
+        <span class="tech">Tokio Runtime</span>
+      </article>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       Stats
+       ═══════════════════════════════════════════════════════════ -->
+  <div class="stats-banner" aria-label="Project statistics">
+    <div class="container">
+      <div class="stats-grid">
+        <div class="stat-item reveal">
+          <h4>10</h4>
+          <p>Workspace crates</p>
+        </div>
+        <div class="stat-item reveal reveal-delay-1">
+          <h4>30+</h4>
+          <p>RPC methods</p>
+        </div>
+        <div class="stat-item reveal reveal-delay-2">
+          <h4>5</h4>
+          <p>Networks supported</p>
+        </div>
+        <div class="stat-item reveal reveal-delay-3">
+          <h4>0</h4>
+          <p>Trusted third parties</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       Feature Showcase
+       ═══════════════════════════════════════════════════════════ -->
+  <section id="features" class="features-section" aria-labelledby="features-heading">
+    <div class="container">
+      <div class="section-label reveal">Features</div>
+      <h2 class="section-title reveal" id="features-heading">Everything you need. Nothing you don't.</h2>
+      <p class="section-desc reveal">Each feature earns its place. No bloat, no abstractions for their own sake.</p>
+
+      <!-- Lightning -->
+      <div class="feature-row reveal">
+        <div class="feature-text">
+          <h3>Embedded <em>Lightning</em> node</h3>
+          <p>
+            Open channels, create invoices, route payments &mdash; all from the same binary.
+            LDK runs in-process with direct access to the wallet for channel funding and
+            on-chain sweeps. No separate daemon needed.
+          </p>
+          <ul class="feature-list">
+            <li>BOLT11 invoice creation and payment</li>
+            <li>Cooperative and force channel closes</li>
+            <li>Automatic wallet-funded channel opens</li>
+            <li>L402 micropayment API gating</li>
+            <li>Configurable channel size limits</li>
+          </ul>
+        </div>
+        <div class="feature-visual" aria-label="Lightning RPC example">
+<span class="comment">// Open a Lightning channel</span>
+<span class="key">$</span> curl -X POST localhost:8332 -d '{
+  <span class="str">"method"</span>: <span class="str">"ln_openchannel"</span>,
+  <span class="str">"params"</span>: [
+    <span class="str">"02acb6...node_id"</span>,
+    <span class="num">100000</span>,
+    <span class="num">0</span>
+  ]
+}'
+
+<span class="comment">// Create a BOLT11 invoice</span>
+<span class="key">$</span> curl -X POST localhost:8332 -d '{
+  <span class="str">"method"</span>: <span class="str">"ln_invoice"</span>,
+  <span class="str">"params"</span>: [<span class="num">50000</span>, <span class="str">"coffee"</span>]
+}'</div>
+      </div>
+
+      <!-- L402 -->
+      <div class="feature-row reverse reveal">
+        <div class="feature-text">
+          <h3><em>L402</em> Lightning-gated APIs</h3>
+          <p>
+            Monetize your node's data with stateless micropayments. Clients pay a Lightning
+            invoice to access premium endpoints &mdash; block data, fee estimates, mempool stats.
+            No accounts. No subscriptions. Just sats.
+          </p>
+          <ul class="feature-list">
+            <li>HTTP 402 Payment Required flow</li>
+            <li>HMAC-SHA256 stateless tokens</li>
+            <li>Configurable price per request</li>
+            <li>Time-bounded token expiry</li>
+            <li>Secret derived from Lightning seed</li>
+          </ul>
+        </div>
+        <div class="feature-visual" aria-label="L402 payment flow">
+<span class="comment"># 1. Request gated endpoint</span>
+<span class="key">GET</span> /l402/api/fees
+<span class="val">→ 402 Payment Required</span>
+<span class="val">  WWW-Authenticate: L402</span>
+<span class="val">    macaroon="<span class="str">dG9rZW4...</span>"</span>
+<span class="val">    invoice="<span class="str">lnbc100n1...</span>"</span>
+
+<span class="comment"># 2. Pay the invoice via Lightning</span>
+
+<span class="comment"># 3. Access with token</span>
+<span class="key">GET</span> /l402/api/fees
+<span class="key">Authorization:</span> L402 <span class="str">dG9rZW4...</span>
+<span class="val">→ 200 OK { fee_histogram: [...] }</span></div>
+      </div>
+
+      <!-- Nostr -->
+      <div class="feature-row reveal">
+        <div class="feature-text">
+          <h3>Native <em>Nostr</em> integration</h3>
+          <p>
+            Your node speaks Nostr natively. Broadcast validated blocks, publish real-time
+            mempool fee data, and authenticate RPC requests with Nostr event signatures
+            instead of passwords.
+          </p>
+          <ul class="feature-list">
+            <li>Block announcements (kind 33333)</li>
+            <li>Mempool fee oracle (kind 33334)</li>
+            <li>NIP-98 HTTP authentication</li>
+            <li>Persistent identity with profile metadata</li>
+            <li>Dynamic relay management via RPC</li>
+          </ul>
+        </div>
+        <div class="feature-visual" aria-label="Nostr block announcement event">
+<span class="comment">// Block announcement event (kind 33333)</span>
+{
+  <span class="str">"kind"</span>: <span class="num">33333</span>,
+  <span class="str">"content"</span>: {
+    <span class="str">"height"</span>: <span class="num">940601</span>,
+    <span class="str">"hash"</span>: <span class="str">"00000000...f005ff"</span>,
+    <span class="str">"timestamp"</span>: <span class="num">1710403200</span>,
+    <span class="str">"tx_count"</span>: <span class="num">3847</span>,
+    <span class="str">"size"</span>: <span class="num">1832456</span>
+  },
+  <span class="str">"tags"</span>: [
+    [<span class="str">"d"</span>, <span class="str">"block"</span>],
+    [<span class="str">"t"</span>, <span class="str">"bitcoin"</span>],
+    [<span class="str">"network"</span>, <span class="str">"mainnet"</span>]
+  ]
+}</div>
+      </div>
+
+      <!-- Wallet -->
+      <div class="feature-row reverse reveal">
+        <div class="feature-text">
+          <h3>Secure <em>descriptor</em> wallet</h3>
+          <p>
+            BDK-powered wallet with BIP39 mnemonic generation, BIP84 native SegWit
+            addresses, and full PSBT support. Create wallets via RPC &mdash; seed phrases
+            are returned once via RPC.
+          </p>
+          <ul class="feature-list">
+            <li>BIP39 12-word mnemonic generation</li>
+            <li>BIP84 native SegWit (bc1q...)</li>
+            <li>PSBT creation, signing, finalization</li>
+            <li>Optional SQLCipher encryption at rest</li>
+            <li>Import existing wallets from seed phrase</li>
+            <li>Full blockchain rescan via RPC</li>
+          </ul>
+        </div>
+        <div class="feature-visual" aria-label="Wallet creation example">
+<span class="comment">// Create a new wallet</span>
+<span class="key">$</span> curl -X POST localhost:8332 -d '{
+  <span class="str">"method"</span>: <span class="str">"createwallet"</span>
+}'
+
+{
+  <span class="str">"mnemonic"</span>: <span class="str">"abandon ability ..."</span>,
+  <span class="str">"message"</span>: <span class="str">"BACKUP THIS SEED
+    PHRASE — it will NOT be
+    shown again"</span>
+}
+
+<span class="comment">// Import from existing seed</span>
+<span class="key">$</span> curl -X POST localhost:8332 -d '{
+  <span class="str">"method"</span>: <span class="str">"importwallet"</span>,
+  <span class="str">"params"</span>: [<span class="str">"word1 word2 ..."</span>]
+}'</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       API Reference
+       ═══════════════════════════════════════════════════════════ -->
+  <section id="api" class="rpc-section container" aria-labelledby="api-heading">
+    <div class="section-label reveal">API Reference</div>
+    <h2 class="section-title reveal" id="api-heading">Bitcoin Core compatible. And then some.</h2>
+    <p class="section-desc reveal">Drop-in JSON-RPC compatibility where it matters. Extended with Lightning, Nostr, and wallet management.</p>
+
+    <div class="rpc-grid reveal">
+      <div class="rpc-group">
+        <h4>Blockchain</h4>
+        <div class="rpc-method"><code>getblockchaininfo</code></div>
+        <div class="rpc-method"><code>getblockcount</code></div>
+        <div class="rpc-method"><code>getbestblockhash</code></div>
+        <div class="rpc-method"><code>getblock</code></div>
+        <div class="rpc-method"><code>getnetworkinfo</code></div>
+        <div class="rpc-method"><code>getpeerinfo</code></div>
+        <div class="rpc-method"><code>getmempoolinfo</code></div>
+        <div class="rpc-method"><code>getrawmempool</code></div>
+      </div>
+
+      <div class="rpc-group">
+        <h4>Transactions</h4>
+        <div class="rpc-method"><code>getrawtransaction</code></div>
+        <div class="rpc-method"><code>sendrawtransaction</code></div>
+        <div class="rpc-method"><code>walletcreatefundedpsbt</code></div>
+        <div class="rpc-method"><code>walletprocesspsbt</code></div>
+      </div>
+
+      <div class="rpc-group">
+        <h4>Wallet</h4>
+        <div class="rpc-method"><code>createwallet</code></div>
+        <div class="rpc-method"><code>importwallet</code></div>
+        <div class="rpc-method"><code>getbalance</code></div>
+        <div class="rpc-method"><code>getwalletinfo</code></div>
+        <div class="rpc-method"><code>getnewaddress</code></div>
+        <div class="rpc-method"><code>listtransactions</code></div>
+        <div class="rpc-method"><code>rescanblockchain</code></div>
+      </div>
+
+      <div class="rpc-group">
+        <h4>Lightning</h4>
+        <div class="rpc-method"><code>ln_getinfo</code></div>
+        <div class="rpc-method"><code>ln_connect</code></div>
+        <div class="rpc-method"><code>ln_openchannel</code></div>
+        <div class="rpc-method"><code>ln_closechannel</code></div>
+        <div class="rpc-method"><code>ln_invoice</code></div>
+        <div class="rpc-method"><code>ln_pay</code></div>
+        <div class="rpc-method"><code>ln_listchannels</code></div>
+        <div class="rpc-method"><code>ln_listpeers</code></div>
+      </div>
+
+      <div class="rpc-group">
+        <h4>Nostr</h4>
+        <div class="rpc-method"><code>nostr_getinfo</code></div>
+        <div class="rpc-method"><code>nostr_publish</code></div>
+        <div class="rpc-method"><code>nostr_addrelay</code></div>
+        <div class="rpc-method"><code>nostr_removerelay</code></div>
+        <div class="rpc-method"><code>nostr_listrelays</code></div>
+      </div>
+
+      <div class="rpc-group">
+        <h4>REST Endpoints</h4>
+        <div class="rpc-method"><code>GET /api/info</code></div>
+        <div class="rpc-method"><code>GET /api/blockchain</code></div>
+        <div class="rpc-method"><code>GET /api/mempool</code></div>
+        <div class="rpc-method"><code>GET /api/peers</code></div>
+        <div class="rpc-method"><code>GET /api/lightning/*</code></div>
+        <div class="rpc-method"><code>GET /l402/api/*</code></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       Configuration
+       ═══════════════════════════════════════════════════════════ -->
+  <section id="config" class="config-section container" aria-labelledby="config-heading">
+    <div class="section-label reveal">Configuration</div>
+    <h2 class="section-title reveal" id="config-heading">One file. Full control.</h2>
+    <p class="section-desc reveal">Everything in <code style="color:var(--text-accent)">wolfe.toml</code>. Enable what you need, leave the rest.</p>
+
+    <div class="config-block reveal">
+      <div class="config-header">
+        <span class="config-filename">wolfe.toml</span>
+        <span class="config-lang">Example</span>
+      </div>
+      <div class="config-body"><span class="comment"># ── Network ──────────────────────────────────────────────</span>
+<span class="key">[network]</span>
+<span class="val">chain</span> = <span class="str">"mainnet"</span>              <span class="comment"># mainnet | testnet | signet | regtest</span>
+
+<span class="comment"># ── P2P ──────────────────────────────────────────────────</span>
+<span class="key">[p2p]</span>
+<span class="val">listen</span> = <span class="str">"0.0.0.0:8333"</span>
+<span class="val">max_outbound</span> = <span class="num">10</span>
+<span class="val">prefer_v2_transport</span> = <span class="num">true</span>     <span class="comment"># BIP324 encrypted connections</span>
+
+<span class="comment"># ── Wallet (off by default) ──────────────────────────────</span>
+<span class="key">[wallet]</span>
+<span class="val">enabled</span> = <span class="num">true</span>                <span class="comment"># create via RPC: createwallet</span>
+
+<span class="comment"># ── Lightning (off by default) ───────────────────────────</span>
+<span class="key">[lightning]</span>
+<span class="val">enabled</span> = <span class="num">true</span>
+<span class="val">listen_port</span> = <span class="num">9735</span>
+<span class="val">alias</span> = <span class="str">"BitcoinWolfe"</span>
+<span class="val">color</span> = <span class="str">"ff9900"</span>
+
+<span class="comment"># ── L402 Paywall (off by default) ────────────────────────</span>
+<span class="key">[l402]</span>
+<span class="val">enabled</span> = <span class="num">true</span>                <span class="comment"># requires Lightning</span>
+<span class="val">price_sats</span> = <span class="num">10</span>
+
+<span class="comment"># ── Nostr (off by default) ───────────────────────────────</span>
+<span class="key">[nostr]</span>
+<span class="val">enabled</span> = <span class="num">true</span>
+<span class="val">block_announcements</span> = <span class="num">true</span>
+<span class="val">fee_oracle</span> = <span class="num">true</span>
+
+<span class="comment"># ── Metrics (on by default) ──────────────────────────────</span>
+<span class="key">[metrics]</span>
+<span class="val">enabled</span> = <span class="num">true</span>               <span class="comment"># Prometheus on :9332/metrics</span></div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       CTA
+       ═══════════════════════════════════════════════════════════ -->
+  <section class="cta-section container" aria-labelledby="cta-heading">
+    <div class="section-label reveal">Get Started</div>
+    <h2 class="section-title reveal" id="cta-heading">Run your own node. Verify everything.</h2>
+    <p class="section-desc reveal">
+      BitcoinWolfe is free, open-source software. Clone it, build it, run it.
+      Your keys. Your node. Your rules.
+    </p>
+    <div class="cta-actions reveal">
+      <a href="https://github.com/refined-element/BitcoinWolfe" class="btn-primary" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        Clone Repository
+      </a>
+      <a href="#hero" class="btn-secondary">Back to Top</a>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       Footer
+       ═══════════════════════════════════════════════════════════ -->
+  <footer>
+    <div class="container">
+      <div class="footer-inner">
+        <div class="footer-left">BitcoinWolfe &copy; 2025. Open source under MIT license.</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/refined-element/BitcoinWolfe" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="https://github.com/refined-element/BitcoinWolfe/issues" target="_blank" rel="noopener">Issues</a></li>
+          <li><a href="#api">API Reference</a></li>
+        </ul>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       Scroll reveal animation
+       ═══════════════════════════════════════════════════════════ -->
+  <script>
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('visible');
+          }
+        });
+      },
+      { threshold: 0.1, rootMargin: '0px 0px -40px 0px' }
+    );
+
+    document.querySelectorAll('.reveal').forEach((el) => observer.observe(el));
+  </script>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       Agent-readable plain text summary (hidden, for crawlers)
+       ═══════════════════════════════════════════════════════════ -->
+  <template id="agent-summary">
+    BitcoinWolfe is a modern, open-source Bitcoin full node written in Rust.
+
+    ARCHITECTURE: 10 modular workspace crates compiled into a single binary.
+    - wolfe-consensus: libbitcoinkernel v0.2 FFI for full block validation
+    - wolfe-lightning: Embedded LDK v0.2.2 Lightning Network node
+    - wolfe-wallet: BDK v1.1 descriptor wallet (BIP39/BIP84, SQLite, SQLCipher)
+    - wolfe-p2p: Async P2P with BIP324 v2 encrypted transport
+    - wolfe-nostr: Block announcements, fee oracle, NIP-98 auth
+    - wolfe-rpc: JSON-RPC (Bitcoin Core compatible) + REST + L402 gated APIs
+    - wolfe-store: redb ACID key-value persistence
+    - wolfe-mempool: Fee-sorted pool with RBF, eviction, OP_RETURN policy
+    - wolfe-types: Shared types and configuration
+    - wolfe-node: Main binary and event loop orchestration
+
+    KEY FEATURES:
+    - Full consensus validation via libbitcoinkernel (same engine as Bitcoin Core)
+    - Embedded Lightning node: channels, invoices, payments, routing
+    - L402 micropayment-gated REST API endpoints
+    - Nostr: block announcements (kind 33333), fee oracle (kind 33334), NIP-98 auth
+    - BIP324 v2 encrypted P2P transport with legacy fallback
+    - Prometheus-native metrics on configurable endpoint
+    - BIP39 seed phrases returned via RPC only
+    - Header-first sync with automatic resync recovery
+    - Block file pruning at application level
+    - Dual authentication: HTTP Basic + NIP-98 Nostr events
+
+    RPC METHODS (30+):
+    Blockchain: getblockchaininfo, getblockcount, getbestblockhash, getblock,
+      getnetworkinfo, getpeerinfo, getmempoolinfo, getrawmempool
+    Transactions: getrawtransaction, sendrawtransaction
+    Wallet: createwallet, importwallet, getbalance, getwalletinfo, getnewaddress,
+      listtransactions, walletcreatefundedpsbt, walletprocesspsbt, rescanblockchain
+    Lightning: ln_getinfo, ln_connect, ln_openchannel, ln_closechannel,
+      ln_invoice, ln_pay, ln_listchannels, ln_listpeers
+    Nostr: nostr_getinfo, nostr_publish, nostr_addrelay, nostr_removerelay, nostr_listrelays
+    Utility: uptime, stop
+
+    REST ENDPOINTS:
+    /api/info, /api/blockchain, /api/mempool, /api/peers,
+    /api/lightning/info, /api/lightning/channels
+    L402 gated: /l402/api/block/:height, /l402/api/fees, /l402/api/mempool, /l402/api/chain
+
+    CONFIGURATION: Single wolfe.toml file with sections for network, p2p, rpc,
+    wallet, lightning, l402, nostr, mempool, storage, logging, and metrics.
+
+    LICENSE: MIT
+    LANGUAGE: Rust
+    VERSION: 0.1.0
+  </template>
+
+</body>
+</html>

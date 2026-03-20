@@ -6,6 +6,8 @@ BitcoinWolfe pairs Bitcoin Core's own consensus engine (extracted as a C library
 stack for networking, storage, mempool policy, wallet, Lightning, and Nostr functionality. The result
 is a node that validates exactly like Core but is built from the ground up with modern Rust tooling.
 
+> **Note:** BitcoinWolfe is open-source software in active development. Use at your own risk. Contributions, bug reports, and feedback are welcome.
+
 ---
 
 ## Architecture

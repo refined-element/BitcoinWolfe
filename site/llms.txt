@@ -1,0 +1,93 @@
+# BitcoinWolfe
+
+> A modern, open-source Bitcoin full node written in Rust with embedded Lightning, Nostr integration, and L402 micropayment APIs.
+
+BitcoinWolfe is a single-binary Bitcoin full node built from 10 modular Rust crates. It validates every block using libbitcoinkernel (the same consensus engine as Bitcoin Core), runs an embedded Lightning Network node via LDK, publishes blockchain data to Nostr relays, and gates REST API endpoints behind Lightning micropayments using the L402 protocol.
+
+## Core Components
+
+- **Consensus**: libbitcoinkernel v0.2 via FFI — full script verification, UTXO validation, all consensus rules
+- **Lightning**: LDK v0.2.2 embedded node — channels, BOLT11 invoices, payment routing, in-process wallet integration
+- **Wallet**: BDK v1.1 descriptor wallet — BIP39 12-word seed, BIP84 native SegWit (bc1q), PSBT workflows, optional SQLCipher encryption
+- **P2P**: Async tokio networking — BIP324 v2 encrypted transport, DNS seed discovery, peer ban tracking
+- **Nostr**: Event publishing — block announcements (kind 33333), mempool fee oracle (kind 33334), NIP-98 HTTP auth, profile metadata
+- **RPC**: Axum-based server — Bitcoin Core compatible JSON-RPC, REST API, L402 Lightning-gated endpoints
+- **Storage**: redb ACID key-value store — headers, peer records, Lightning state in separate databases
+- **Mempool**: Fee-sorted pool — full RBF, size eviction, configurable OP_RETURN policy, fee histogram
+
+## RPC Methods
+
+### Blockchain
+- getblockchaininfo — chain, blocks, headers, syncing status
+- getblockcount — validated block height
+- getbestblockhash — tip block hash
+- getblock [hash] [verbosity] — block by hash (hex or info)
+- getnetworkinfo — version, user agent, peer count
+- getpeerinfo — connected peer details
+- getmempoolinfo — mempool size, fees, policy
+- getrawmempool — all txids sorted by fee rate
+
+### Transactions
+- getrawtransaction [txid] — transaction from mempool
+- sendrawtransaction [hex] — broadcast transaction
+
+### Wallet
+- createwallet — generate new BIP39 wallet (returns seed phrase once, never logged)
+- importwallet [mnemonic] — import wallet from existing seed phrase
+- getbalance — confirmed balance in BTC
+- getwalletinfo — balance, unconfirmed, immature, tx count
+- getnewaddress — new native SegWit receiving address
+- listtransactions — all wallet transactions
+- walletcreatefundedpsbt — create and fund PSBT
+- walletprocesspsbt [psbt] — sign PSBT
+- rescanblockchain [start] [stop] — rescan blocks for wallet transactions
+
+### Lightning
+- ln_getinfo — node ID, channel count, peer count
+- ln_connect [pubkey@host:port] — connect to Lightning peer
+- ln_openchannel [pubkey] [amount_sat] — open channel
+- ln_closechannel [channel_id] [counterparty] [force] — close channel
+- ln_invoice [amount_msat] [description] — create BOLT11 invoice
+- ln_pay [invoice] — pay BOLT11 invoice
+- ln_listchannels — all channels with capacity and status
+- ln_listpeers — connected Lightning peers
+
+### Nostr
+- nostr_getinfo — npub, relay count, relay list
+- nostr_publish [content] [kind] — publish Nostr event
+- nostr_addrelay [url] — add relay
+- nostr_removerelay [url] — remove relay
+- nostr_listrelays — list connected relays
+
+### Utility
+- uptime — node uptime in seconds
+- stop — graceful shutdown
+
+## REST API
+
+- GET /api/info — node information
+- GET /api/blockchain — chain status
+- GET /api/mempool — mempool statistics
+- GET /api/peers — connected peers
+- GET /api/lightning/info — Lightning node status
+- GET /api/lightning/channels — Lightning channel list
+
+## L402 Gated Endpoints (require Lightning payment)
+
+- GET /l402/api/block/:height — block data by height
+- GET /l402/api/fees — mempool fee histogram
+- GET /l402/api/mempool — mempool stats
+- GET /l402/api/chain — chain overview
+
+## Configuration
+
+Single `wolfe.toml` file with sections: [network], [p2p], [rpc], [wallet], [lightning], [l402], [nostr], [mempool], [storage], [logging], [metrics].
+
+## Technical Details
+
+- Language: Rust
+- Version: 0.1.0
+- License: MIT
+- Tests: 198 unit tests across workspace
+- Binary: single `wolfe` executable
+- Default ports: 8333 (P2P), 8332 (RPC), 9735 (Lightning), 9332 (Metrics)
