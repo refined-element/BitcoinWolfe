@@ -537,7 +537,8 @@ async fn main() -> Result<()> {
     // ── RPC TX broadcast pipeline ──────────────────────────────────
     // Allow the RPC server to broadcast raw transactions to the P2P network.
     {
-        let (rpc_tx_sender, mut rpc_tx_rx) = tokio::sync::mpsc::unbounded_channel::<bitcoin::Transaction>();
+        let (rpc_tx_sender, mut rpc_tx_rx) =
+            tokio::sync::mpsc::unbounded_channel::<bitcoin::Transaction>();
         rpc_state.set_tx_broadcast(rpc_tx_sender);
         let rpc_broadcast_pm = peer_manager.clone();
         let rpc_broadcast_shutdown = shutdown.clone();

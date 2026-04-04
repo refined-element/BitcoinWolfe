@@ -211,6 +211,7 @@ listen = "127.0.0.1:9332"     # Prometheus scrape endpoint
 | GET | `/api/peers` | Connected peers with user agents, versions, transport info |
 | GET | `/api/lightning/info` | Lightning node ID, channel count, peer count |
 | GET | `/api/lightning/channels` | Lightning channel list with capacities and status |
+| GET | `/api/lightning/payments` | Lightning payment history (send/receive/failed) |
 
 ### JSON-RPC (Bitcoin Core Compatible)
 
@@ -263,6 +264,7 @@ POST to `/` with standard JSON-RPC 2.0 payloads.
 | `ln_openchannel` | `["pubkey", amount_sat, push_msat?]` | Open a channel |
 | `ln_invoice` | `[amount_msat?, description?, expiry_secs?]` | Create a BOLT11 invoice |
 | `ln_pay` | `["lnbc..."]` | Pay a BOLT11 invoice |
+| `ln_listpayments` | `[limit?]` | Payment history (default 50, most recent first) |
 
 #### Node
 
@@ -292,6 +294,59 @@ curl -s http://127.0.0.1:8332/ \
 
 ---
 
+## Dashboard
+
+BitcoinWolfe includes a web dashboard for monitoring your node, wallet, Lightning channels, and Nostr integration.
+
+### Setup
+
+```bash
+# Install dependencies (one-time)
+cd dashboard
+npm install
+
+# Build the static site
+npm run build
+
+# Serve it (any static file server works)
+npx vite preview --port 5173
+```
+
+Then open **http://localhost:5173** in your browser.
+
+### Configuration
+
+The dashboard connects to your node's RPC server. The default URL is `http://127.0.0.1:8332`. If your node uses authentication, enter your credentials on the Settings page.
+
+For the dashboard to reach the RPC server from a browser, enable CORS in your `wolfe.toml`:
+
+```toml
+[rpc]
+cors_origins = ["http://localhost:5173"]
+```
+
+### Pages
+
+| Page | What it shows |
+|---|---|
+| **Overview** | Block height, sync progress, peer count, mempool, uptime |
+| **Wallet** | Balance, addresses, send/receive, transaction history |
+| **Lightning** | Channels, capacity bars, payment history, create invoices, pay invoices |
+| **Peers** | Connected Bitcoin P2P peers with user agents and versions |
+| **Nostr** | Relay connections, published events, npub |
+| **Settings** | Node URL, auth credentials, poll interval |
+
+### Development
+
+```bash
+cd dashboard
+npm run dev          # Vite dev server with hot reload (port 5173)
+npm run test         # Run Vitest test suite
+npm run build        # Production build to dashboard/build/
+```
+
+---
+
 ## Roadmap
 
 ### Done
@@ -316,17 +371,19 @@ curl -s http://127.0.0.1:8332/ \
 - [x] Structured logging (text and JSON formats)
 - [x] Graceful shutdown handling
 
+- [x] Web dashboard (SvelteKit) with live node monitoring
+- [x] Lightning payment history with persistence
+- [x] Transaction broadcast via `sendrawtransaction` RPC
+- [x] L402 Lightning-gated API endpoints
+
 ### Planned
 
-- [ ] Transaction relay and fee estimation
 - [ ] Compact block relay (BIP152)
-- [ ] Lightning channel funding (FundingGenerationReady event handling)
 - [ ] Lightning BOLT12 offers
 - [ ] Rapid Gossip Sync
-- [ ] Wallet `apply_block()` chain feeding from node
 - [ ] Configuration hot-reload
 - [ ] Peer scoring and eviction logic
-- [ ] Grafana dashboard templates
+- [ ] Embed dashboard in the `wolfe` binary (no separate server needed)
 
 ---
 
