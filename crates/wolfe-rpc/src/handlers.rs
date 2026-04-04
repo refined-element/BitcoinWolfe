@@ -801,6 +801,16 @@ async fn dispatch_rpc(
             let start = get_param_i64(params, 0).unwrap_or(0) as u32;
             let stop = get_param_i64(params, 1).map(|v| v as u32).unwrap_or(tip);
 
+            // Reset the wallet's chain state first so rescan_block can connect
+            // blocks to genesis without hitting "cannot connect" errors.
+            {
+                let mut w = wallet
+                    .lock()
+                    .map_err(|e| RpcError::Wallet(format!("wallet lock: {}", e)))?;
+                w.reset_chain()
+                    .map_err(|e| RpcError::Wallet(format!("chain reset: {}", e)))?;
+            }
+
             let mut scanned = 0u32;
             let mut found_txs = 0usize;
 

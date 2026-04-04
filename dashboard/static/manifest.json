@@ -1,0 +1,23 @@
+{
+	"name": "BitcoinWolfe Dashboard",
+	"short_name": "Wolfe",
+	"description": "Dashboard for your BitcoinWolfe full node",
+	"start_url": "/",
+	"display": "standalone",
+	"background_color": "#07080a",
+	"theme_color": "#ff9900",
+	"icons": [
+		{
+			"src": "/wolf-icon.png",
+			"sizes": "512x512",
+			"type": "image/png",
+			"purpose": "any"
+		},
+		{
+			"src": "/apple-touch-icon.png",
+			"sizes": "180x180",
+			"type": "image/png",
+			"purpose": "any"
+		}
+	]
+}

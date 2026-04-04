@@ -393,6 +393,35 @@ impl NodeWallet {
             .collect()
     }
 
+    /// Reset the wallet's local chain state so it can accept blocks from any height.
+    ///
+    /// Clears BDK's stored checkpoints, anchors, and transactions, then reloads
+    /// the wallet. Keys, descriptors, and revealed address indices are preserved.
+    /// After calling this the wallet balance will show 0 until blocks containing
+    /// the wallet's transactions are re-fed via `apply_block` or `rescan_block`.
+    pub fn reset_chain(&mut self) -> Result<(), WalletError> {
+        info!("resetting wallet chain state (clearing blocks, anchors, txs)");
+        self.db
+            .execute_batch(
+                "DELETE FROM bdk_blocks WHERE block_height > 0;
+                 DELETE FROM bdk_anchors;
+                 DELETE FROM bdk_txs;
+                 DELETE FROM bdk_txouts;",
+            )
+            .map_err(|e| WalletError::Database(format!("reset chain tables: {}", e)))?;
+
+        // Reload the wallet from the cleaned database
+        let wallet = bdk_wallet::Wallet::load()
+            .check_network(self.wallet.network())
+            .load_wallet(&mut self.db)
+            .map_err(|e| WalletError::Bdk(e.to_string()))?
+            .ok_or_else(|| WalletError::Bdk("wallet lost after chain reset".to_string()))?;
+
+        self.wallet = wallet;
+        info!("wallet chain state reset — ready to rescan");
+        Ok(())
+    }
+
     /// Persist wallet state to the SQLite database.
     fn persist(&mut self) -> Result<(), WalletError> {
         self.wallet
