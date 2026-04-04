@@ -566,31 +566,6 @@ async fn dispatch_rpc(
             }))
         }
 
-        "sendrawtransaction" => {
-            let hex_str = get_param_str(params, 0)
-                .ok_or_else(|| RpcError::InvalidParams("missing hex transaction".to_string()))?;
-
-            let raw = hex::decode(hex_str)
-                .map_err(|e| RpcError::InvalidParams(format!("invalid hex: {}", e)))?;
-
-            let tx: bitcoin::Transaction = deserialize(&raw)
-                .map_err(|e| RpcError::InvalidParams(format!("invalid transaction: {}", e)))?;
-
-            let txid = tx.compute_txid();
-
-            // Submit to local mempool
-            if let Err(e) = state.mempool.add(tx.clone(), 0) {
-                tracing::warn!(%txid, ?e, "sendrawtransaction: mempool rejected tx");
-            }
-
-            // Broadcast to P2P network
-            if let Some(sender) = state.tx_broadcast() {
-                let _ = sender.send(tx);
-            }
-
-            Ok(json!(txid.to_string()))
-        }
-
         // ── Lightning RPCs ────────────────────────────────────────────
         "ln_getinfo" => {
             let ln = state

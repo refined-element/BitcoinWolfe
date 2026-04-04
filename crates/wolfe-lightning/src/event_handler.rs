@@ -10,7 +10,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::broadcaster::WolfeBroadcaster;
 use crate::fee_estimator::WolfeFeeEstimator;
-use crate::persister::{PaymentRecord, WolfeKVStore};
+use crate::persister::PaymentRecord;
 use crate::types::WolfeChannelManager;
 use wolfe_types::config::LightningConfig;
 use wolfe_wallet::NodeWallet;
