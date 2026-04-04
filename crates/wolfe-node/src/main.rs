@@ -534,6 +534,26 @@ async fn main() -> Result<()> {
         "P2P manager started"
     );
 
+    // ── RPC TX broadcast pipeline ──────────────────────────────────
+    // Allow the RPC server to broadcast raw transactions to the P2P network.
+    {
+        let (rpc_tx_sender, mut rpc_tx_rx) = tokio::sync::mpsc::unbounded_channel::<bitcoin::Transaction>();
+        rpc_state.set_tx_broadcast(rpc_tx_sender);
+        let rpc_broadcast_pm = peer_manager.clone();
+        let rpc_broadcast_shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            while let Some(tx) = rpc_tx_rx.recv().await {
+                if rpc_broadcast_shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+                let txid = tx.compute_txid();
+                info!(%txid, "broadcasting RPC transaction");
+                use bitcoin::p2p::message::NetworkMessage;
+                let _ = rpc_broadcast_pm.broadcast(NetworkMessage::Tx(tx)).await;
+            }
+        });
+    }
+
     // ── Lightning TX broadcast pipeline ──────────────────────────────
     // Wire LDK's broadcast channel to mempool + Bitcoin P2P network.
     if let Some(mut rx) = ln_broadcast_rx.take() {

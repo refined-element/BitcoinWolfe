@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::mpsc;
 
 use axum::extract::Request;
 use axum::middleware::{self, Next};
@@ -43,6 +44,8 @@ pub struct NodeState {
     /// Payment hashes that have been claimed (for L402 verification).
     paid_invoices: parking_lot::RwLock<Arc<dashmap::DashMap<[u8; 32], u64>>>,
     pub l402_config: L402Config,
+    /// Channel for broadcasting raw transactions to the P2P network.
+    tx_broadcast: parking_lot::RwLock<Option<mpsc::UnboundedSender<bitcoin::Transaction>>>,
 }
 
 impl NodeState {
@@ -72,6 +75,7 @@ impl NodeState {
             l402_secret: parking_lot::RwLock::new(None),
             paid_invoices: parking_lot::RwLock::new(Arc::new(dashmap::DashMap::new())),
             l402_config: L402Config::default(),
+            tx_broadcast: parking_lot::RwLock::new(None),
         }
     }
 
@@ -133,6 +137,14 @@ impl NodeState {
 
     pub fn set_l402_config(&mut self, config: L402Config) {
         self.l402_config = config;
+    }
+
+    pub fn set_tx_broadcast(&self, sender: mpsc::UnboundedSender<bitcoin::Transaction>) {
+        *self.tx_broadcast.write() = Some(sender);
+    }
+
+    pub fn tx_broadcast(&self) -> Option<mpsc::UnboundedSender<bitcoin::Transaction>> {
+        self.tx_broadcast.read().clone()
     }
 
     pub fn set_shutdown_flag(&mut self, flag: Arc<AtomicBool>) {
