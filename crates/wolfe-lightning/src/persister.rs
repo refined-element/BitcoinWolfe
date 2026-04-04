@@ -3,10 +3,26 @@ use std::sync::Arc;
 use lightning::io;
 use lightning::util::persist::KVStoreSync;
 use redb::{Database, TableDefinition};
+use serde::{Deserialize, Serialize};
 
 /// Table storing all LDK persistence data.
 /// Key format: "namespace/secondary_namespace/key" -> raw bytes
 const LN_KV: TableDefinition<&str, &[u8]> = TableDefinition::new("ln_kv");
+
+/// Table storing payment history, keyed by timestamp (descending sort).
+/// Key: "timestamp_payment_hash" -> JSON-encoded PaymentRecord
+const PAYMENT_HISTORY: TableDefinition<&str, &[u8]> = TableDefinition::new("payment_history");
+
+/// A persisted payment record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentRecord {
+    pub payment_hash: String,
+    pub direction: String, // "send" | "receive"
+    pub status: String,    // "completed" | "failed"
+    pub amount_msat: Option<u64>,
+    pub fee_msat: Option<u64>,
+    pub timestamp: u64,
+}
 
 /// A KVStoreSync implementation backed by redb.
 ///
@@ -23,12 +39,56 @@ pub struct WolfeKVStore {
 
 impl WolfeKVStore {
     pub fn new(db: Arc<Database>) -> Self {
-        // Ensure the table exists
+        // Ensure tables exist
         if let Ok(write_txn) = db.begin_write() {
             let _ = write_txn.open_table(LN_KV);
+            let _ = write_txn.open_table(PAYMENT_HISTORY);
             let _ = write_txn.commit();
         }
         Self { db }
+    }
+
+    /// Record a payment in the history table.
+    pub fn record_payment(&self, record: &PaymentRecord) {
+        let key = format!("{}_{}", record.timestamp, record.payment_hash);
+        let json = match serde_json::to_vec(record) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!(?e, "failed to serialize payment record");
+                return;
+            }
+        };
+        if let Ok(write_txn) = self.db.begin_write() {
+            if let Ok(mut table) = write_txn.open_table(PAYMENT_HISTORY) {
+                let _ = table.insert(key.as_str(), json.as_slice());
+            }
+            let _ = write_txn.commit();
+        }
+    }
+
+    /// List payment history, most recent first. Returns up to `limit` records.
+    pub fn list_payments(&self, limit: usize) -> Vec<PaymentRecord> {
+        let mut payments = Vec::new();
+        let read_txn = match self.db.begin_read() {
+            Ok(t) => t,
+            Err(_) => return payments,
+        };
+        let table = match read_txn.open_table(PAYMENT_HISTORY) {
+            Ok(t) => t,
+            Err(_) => return payments,
+        };
+        // Iterate in reverse (most recent first) since keys are timestamp-prefixed
+        let iter = match table.range::<&str>(..) {
+            Ok(i) => i,
+            Err(_) => return payments,
+        };
+        let all: Vec<_> = iter.filter_map(|e| e.ok()).collect();
+        for entry in all.into_iter().rev().take(limit) {
+            if let Ok(record) = serde_json::from_slice::<PaymentRecord>(entry.1.value()) {
+                payments.push(record);
+            }
+        }
+        payments
     }
 
     fn make_key(primary_namespace: &str, secondary_namespace: &str, key: &str) -> String {

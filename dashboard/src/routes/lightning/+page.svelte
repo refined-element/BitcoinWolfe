@@ -231,6 +231,29 @@
 			</div>
 		{/if}
 
+		<!-- Payment History -->
+		{#if ln.payments.length > 0}
+			<Card>
+				<h3 class="card-subtitle">Payment History</h3>
+				<div class="peer-table">
+					<div class="peer-header">
+						<span>Time</span>
+						<span>Direction</span>
+						<span>Amount</span>
+						<span>Status</span>
+					</div>
+					{#each ln.payments as payment}
+						<div class="peer-row">
+							<span>{new Date(payment.timestamp * 1000).toLocaleString()}</span>
+							<Badge text={payment.direction === 'receive' ? 'Received' : 'Sent'} variant={payment.direction === 'receive' ? 'success' : 'default'} />
+							<span>{payment.amount_msat != null ? formatNumber(Math.floor(payment.amount_msat / 1000)) + ' sat' : '—'}</span>
+							<Badge text={payment.status} variant={payment.status === 'completed' ? 'success' : 'danger'} />
+						</div>
+					{/each}
+				</div>
+			</Card>
+		{/if}
+
 		<!-- Peers Table -->
 		{#if ln.peers.length > 0}
 			<Card>

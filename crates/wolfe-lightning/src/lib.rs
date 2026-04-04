@@ -417,6 +417,11 @@ impl LightningManager {
         &self.channel_manager
     }
 
+    /// List recent payment history (persisted across restarts).
+    pub fn list_payments(&self, limit: usize) -> Vec<persister::PaymentRecord> {
+        self.kv_store.list_payments(limit)
+    }
+
     /// Get the peer manager (for RPC handlers).
     pub fn peer_manager(&self) -> &Arc<WolfePeerManager> {
         &self.peer_manager

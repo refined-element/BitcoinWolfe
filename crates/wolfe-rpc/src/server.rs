@@ -313,6 +313,10 @@ impl RpcServer {
                 "/api/lightning/channels",
                 get(handlers::get_lightning_channels),
             )
+            .route(
+                "/api/lightning/payments",
+                get(handlers::get_lightning_payments),
+            )
             .with_state(state)
             .layer(middleware::from_fn(move |req, next| {
                 let creds = auth_credentials.clone();

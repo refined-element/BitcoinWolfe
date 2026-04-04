@@ -190,6 +190,30 @@ pub async fn get_lightning_channels(State(state): State<Arc<NodeState>>) -> Json
     }
 }
 
+/// GET /api/lightning/payments - Lightning payment history
+pub async fn get_lightning_payments(State(state): State<Arc<NodeState>>) -> Json<Value> {
+    match state.lightning() {
+        Some(ln) => {
+            let payments: Vec<Value> = ln
+                .list_payments(50)
+                .into_iter()
+                .map(|p| {
+                    json!({
+                        "payment_hash": p.payment_hash,
+                        "direction": p.direction,
+                        "status": p.status,
+                        "amount_msat": p.amount_msat,
+                        "fee_msat": p.fee_msat,
+                        "timestamp": p.timestamp,
+                    })
+                })
+                .collect();
+            Json(json!({ "payments": payments }))
+        }
+        None => Json(json!({ "error": "lightning not enabled" })),
+    }
+}
+
 // ─── JSON-RPC Handler ──────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -728,6 +752,30 @@ async fn dispatch_rpc(
                 .map_err(|e| RpcError::Lightning(e.to_string()))?;
 
             Ok(json!({ "invoice": invoice }))
+        }
+
+        "ln_listpayments" => {
+            let ln = state
+                .lightning()
+                .ok_or_else(|| RpcError::Lightning("lightning not enabled".to_string()))?;
+
+            let limit = get_param_i64(params, 0).unwrap_or(50) as usize;
+            let payments: Vec<Value> = ln
+                .list_payments(limit)
+                .into_iter()
+                .map(|p| {
+                    json!({
+                        "payment_hash": p.payment_hash,
+                        "direction": p.direction,
+                        "status": p.status,
+                        "amount_msat": p.amount_msat,
+                        "fee_msat": p.fee_msat,
+                        "timestamp": p.timestamp,
+                    })
+                })
+                .collect();
+
+            Ok(json!(payments))
         }
 
         "ln_pay" => {

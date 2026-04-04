@@ -10,6 +10,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::broadcaster::WolfeBroadcaster;
 use crate::fee_estimator::WolfeFeeEstimator;
+use crate::persister::{PaymentRecord, WolfeKVStore};
 use crate::types::WolfeChannelManager;
 use wolfe_types::config::LightningConfig;
 use wolfe_wallet::NodeWallet;
@@ -237,6 +238,15 @@ pub(crate) async fn handle_ldk_event(
                 .as_secs();
             ctx.paid_invoices.insert(payment_hash.0, now);
 
+            ctx.kv_store.record_payment(&PaymentRecord {
+                payment_hash: payment_hash.to_string(),
+                direction: "receive".into(),
+                status: "completed".into(),
+                amount_msat: Some(amount_msat),
+                fee_msat: None,
+                timestamp: now,
+            });
+
             let _ = event_tx
                 .send(LightningEvent::PaymentReceived {
                     payment_hash: payment_hash.to_string(),
@@ -255,6 +265,19 @@ pub(crate) async fn handle_ldk_event(
                 fee_msat = ?fee_paid_msat,
                 "payment sent"
             );
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            ctx.kv_store.record_payment(&PaymentRecord {
+                payment_hash: payment_hash.to_string(),
+                direction: "send".into(),
+                status: "completed".into(),
+                amount_msat: None,
+                fee_msat: fee_paid_msat,
+                timestamp: now,
+            });
+
             let _ = event_tx
                 .send(LightningEvent::PaymentSent {
                     payment_hash: payment_hash.to_string(),
@@ -268,6 +291,19 @@ pub(crate) async fn handle_ldk_event(
                 .map(|h| h.to_string())
                 .unwrap_or_else(|| "unknown".to_string());
             warn!(hash = %hash_str, "payment failed");
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            ctx.kv_store.record_payment(&PaymentRecord {
+                payment_hash: hash_str.clone(),
+                direction: "send".into(),
+                status: "failed".into(),
+                amount_msat: None,
+                fee_msat: None,
+                timestamp: now,
+            });
+
             let _ = event_tx
                 .send(LightningEvent::PaymentFailed {
                     payment_hash: hash_str,
