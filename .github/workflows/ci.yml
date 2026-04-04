@@ -30,6 +30,17 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build dashboard
+        run: |
+          cd dashboard
+          npm ci
+          npm run build
+
       - name: Cache cargo registry & target
         uses: actions/cache@v4
         with:
@@ -55,3 +66,8 @@ jobs:
 
       - name: Tests
         run: cargo test --all
+
+      - name: Dashboard tests
+        run: |
+          cd dashboard
+          npx vitest run

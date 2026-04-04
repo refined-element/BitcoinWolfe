@@ -248,3 +248,105 @@ fn fresh_wallet_has_no_transactions() {
     let (wallet, _, _dir) = create_test_wallet();
     assert!(wallet.list_transactions().is_empty());
 }
+
+// ── reset_chain tests ───────────────────────────────────────────────────
+
+#[test]
+fn reset_chain_succeeds() {
+    let (mut wallet, _, _dir) = create_test_wallet();
+
+    let result = wallet.reset_chain();
+    assert!(
+        result.is_ok(),
+        "reset_chain should succeed on a fresh wallet: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn reset_chain_preserves_address_generation() {
+    let (mut wallet, _, _dir) = create_test_wallet();
+
+    // Generate an address before reset
+    let addr_before = wallet.new_address().unwrap();
+    assert!(
+        addr_before.starts_with("bcrt1"),
+        "pre-reset address should be valid regtest bech32"
+    );
+
+    // Reset chain state
+    wallet.reset_chain().unwrap();
+
+    // Generate another address after reset — keys should still work
+    let addr_after = wallet.new_address().unwrap();
+    assert!(
+        addr_after.starts_with("bcrt1"),
+        "post-reset address should be valid regtest bech32"
+    );
+
+    // The two addresses should differ because the index keeps advancing
+    assert_ne!(
+        addr_before, addr_after,
+        "address generated after reset should differ (index preserved)"
+    );
+}
+
+#[test]
+fn reset_chain_resets_balance_to_zero() {
+    let (mut wallet, _, _dir) = create_test_wallet();
+
+    // Reset chain state
+    wallet.reset_chain().unwrap();
+
+    // Balance should be zero after reset
+    let balance = wallet.balance();
+    assert_eq!(
+        balance.confirmed, 0,
+        "confirmed balance should be 0 after reset"
+    );
+    assert_eq!(
+        balance.trusted_pending, 0,
+        "trusted_pending should be 0 after reset"
+    );
+    assert_eq!(
+        balance.untrusted_pending, 0,
+        "untrusted_pending should be 0 after reset"
+    );
+    assert_eq!(balance.immature, 0, "immature should be 0 after reset");
+    assert_eq!(balance.total(), 0, "total balance should be 0 after reset");
+}
+
+#[test]
+fn reset_chain_wallet_still_functional() {
+    let (mut wallet, _, _dir) = create_test_wallet();
+
+    // Generate some addresses before reset to advance state
+    let _addr1 = wallet.new_address().unwrap();
+    let _addr2 = wallet.new_address().unwrap();
+
+    // Reset chain state
+    wallet.reset_chain().unwrap();
+
+    // Verify new_address still works
+    let addr = wallet.new_address().unwrap();
+    assert!(
+        addr.starts_with("bcrt1"),
+        "new_address should work after reset, got: {}",
+        addr
+    );
+
+    // Verify balance still works
+    let balance = wallet.balance();
+    assert_eq!(
+        balance.total(),
+        0,
+        "balance should work and be 0 after reset"
+    );
+
+    // Verify list_transactions still works
+    let txs = wallet.list_transactions();
+    assert!(
+        txs.is_empty(),
+        "list_transactions should return empty after reset"
+    );
+}
