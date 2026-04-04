@@ -296,34 +296,17 @@ curl -s http://127.0.0.1:8332/ \
 
 ## Dashboard
 
-BitcoinWolfe includes a web dashboard for monitoring your node, wallet, Lightning channels, and Nostr integration.
+BitcoinWolfe includes a web dashboard embedded directly in the binary. No separate server or setup required.
 
-### Setup
+### Usage
 
-```bash
-# Install dependencies (one-time)
-cd dashboard
-npm install
+Just start the node and open the RPC address in your browser:
 
-# Build the static site
-npm run build
-
-# Serve it (any static file server works)
-npx vite preview --port 5173
+```
+http://127.0.0.1:8332
 ```
 
-Then open **http://localhost:5173** in your browser.
-
-### Configuration
-
-The dashboard connects to your node's RPC server. The default URL is `http://127.0.0.1:8332`. If your node uses authentication, enter your credentials on the Settings page.
-
-For the dashboard to reach the RPC server from a browser, enable CORS in your `wolfe.toml`:
-
-```toml
-[rpc]
-cors_origins = ["http://localhost:5173"]
-```
+The dashboard is served from the same port as the JSON-RPC and REST APIs. `POST /` still works for JSON-RPC, while `GET /` serves the dashboard.
 
 ### Pages
 
@@ -376,6 +359,8 @@ npm run build        # Production build to dashboard/build/
 - [x] Transaction broadcast via `sendrawtransaction` RPC
 - [x] L402 Lightning-gated API endpoints
 
+- [x] Embedded dashboard in the `wolfe` binary (zero-setup web UI)
+
 ### Planned
 
 - [ ] Compact block relay (BIP152)
@@ -383,7 +368,6 @@ npm run build        # Production build to dashboard/build/
 - [ ] Rapid Gossip Sync
 - [ ] Configuration hot-reload
 - [ ] Peer scoring and eviction logic
-- [ ] Embed dashboard in the `wolfe` binary (no separate server needed)
 
 ---
 

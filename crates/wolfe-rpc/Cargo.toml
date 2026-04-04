@@ -28,3 +28,5 @@ wolfe-nostr = { workspace = true }
 nostr-sdk = { workspace = true }
 dashmap = { workspace = true }
 lightning-invoice = { workspace = true }
+rust-embed = { version = "8", features = ["mime-guess"] }
+mime_guess = "2"

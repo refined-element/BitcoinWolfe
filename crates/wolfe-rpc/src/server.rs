@@ -5,9 +5,10 @@ use tokio::sync::mpsc;
 
 use axum::extract::Request;
 use axum::middleware::{self, Next};
-use axum::response::Response;
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
+use rust_embed::Embed;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
@@ -302,7 +303,7 @@ impl RpcServer {
         // Authenticated routes (JSON-RPC + REST)
         let mut app = Router::new()
             // JSON-RPC endpoint (Bitcoin Core compatible)
-            .route("/", post(handlers::json_rpc))
+            .route("/", post(handlers::json_rpc).get(dashboard_handler))
             // REST API endpoints
             .route("/api/info", get(handlers::get_info))
             .route("/api/blockchain", get(handlers::get_blockchain))
@@ -325,6 +326,7 @@ impl RpcServer {
                 auth_middleware(creds, nip98_on, pks, listen, req, next)
             }))
             .merge(l402_routes)
+            .fallback(get(dashboard_handler))
             .layer(TraceLayer::new_for_http());
 
         if !self.config.cors_origins.is_empty() {
@@ -358,6 +360,39 @@ impl RpcServer {
         axum::serve(listener, app).await?;
 
         Ok(())
+    }
+}
+
+// ── Embedded Dashboard ──────────────────────────────────────────────────────
+
+#[derive(Embed)]
+#[folder = "../../dashboard/build/"]
+struct DashboardAssets;
+
+/// Serve embedded dashboard files. Falls back to index.html for SPA routing.
+async fn dashboard_handler(req: Request) -> impl IntoResponse {
+    let path = req.uri().path().trim_start_matches('/');
+
+    // Try exact file match first
+    if let Some(file) = DashboardAssets::get(path) {
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        return (
+            [(axum::http::header::CONTENT_TYPE, mime.as_ref().to_string())],
+            file.data.to_vec(),
+        )
+            .into_response();
+    }
+
+    // Try path.html (SvelteKit prerendered pages: /lightning -> lightning.html)
+    let html_path = format!("{}.html", path);
+    if let Some(file) = DashboardAssets::get(&html_path) {
+        return Html(String::from_utf8_lossy(&file.data).to_string()).into_response();
+    }
+
+    // SPA fallback to index.html
+    match DashboardAssets::get("index.html") {
+        Some(file) => Html(String::from_utf8_lossy(&file.data).to_string()).into_response(),
+        None => (axum::http::StatusCode::NOT_FOUND, "dashboard not found").into_response(),
     }
 }
 

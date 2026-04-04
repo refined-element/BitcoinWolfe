@@ -3,7 +3,7 @@ import type { ConnectionConfig } from "../api/types";
 const STORAGE_KEY = "bitcoinwolfe_connection";
 
 const defaults: ConnectionConfig = {
-  url: "http://127.0.0.1:8332",
+  url: "",
   user: "",
   password: "",
   pollInterval: 3000,
