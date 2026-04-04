@@ -1,0 +1,7 @@
+# Known upstream advisories from transitive dependencies (nostr-sdk).
+# These will be resolved when nostr-sdk updates its dependency tree.
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0049",  # rustls vulnerability via nostr-sdk -> tokio-rustls
+    "RUSTSEC-2024-0384",  # instant crate unmaintained, used by nostr 0.39
+]
