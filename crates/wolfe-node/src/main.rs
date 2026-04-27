@@ -425,6 +425,59 @@ async fn main() -> Result<()> {
             }
         });
         info!("Lightning background processor started");
+
+        // Periodically (re)connect to persistent peers from config.
+        // Runs every 60 seconds: any persistent peer not currently connected
+        // is dialed. Hostnames are re-resolved on each tick so DHCP/DNS
+        // changes on the LAN don't permanently break reconnection.
+        if !config.lightning.persistent_peers.is_empty() {
+            let ln_reconnect = ln.clone();
+            let ln_reconnect_shutdown = shutdown.clone();
+            let peers = config.lightning.persistent_peers.clone();
+            tokio::spawn(async move {
+                // Brief delay to let the listener bind first
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    if ln_reconnect_shutdown.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    let connected: std::collections::HashSet<bitcoin::secp256k1::PublicKey> =
+                        ln_reconnect
+                            .peer_manager()
+                            .list_peers()
+                            .into_iter()
+                            .map(|p| p.counterparty_node_id)
+                            .collect();
+
+                    for peer_str in &peers {
+                        match parse_ln_peer(peer_str) {
+                            Ok((pubkey, addr)) => {
+                                if connected.contains(&pubkey) {
+                                    continue;
+                                }
+                                match ln_reconnect.connect_peer(pubkey, addr).await {
+                                    Ok(()) => info!(
+                                        %pubkey,
+                                        %addr,
+                                        "persistent Lightning peer connected"
+                                    ),
+                                    Err(e) => debug!(
+                                        %peer_str,
+                                        ?e,
+                                        "persistent peer not reachable, will retry"
+                                    ),
+                                }
+                            }
+                            Err(e) => warn!(%peer_str, %e, "invalid persistent_peers entry"),
+                        }
+                    }
+                }
+            });
+            info!("persistent Lightning peer reconnector started");
+        }
     }
 
     // ── Initialize RPC server ───────────────────────────────────────────
@@ -1026,4 +1079,18 @@ fn prune_block_files(blocks_dir: &std::path::Path, target_bytes: u64) -> Result<
     }
 
     Ok(())
+}
+
+/// Parse a "pubkey@host:port" string into a secp256k1 PublicKey and SocketAddr.
+fn parse_ln_peer(s: &str) -> Result<(bitcoin::secp256k1::PublicKey, std::net::SocketAddr)> {
+    use std::net::ToSocketAddrs;
+    let (pk_str, addr_str) = s
+        .split_once('@')
+        .ok_or_else(|| anyhow::anyhow!("expected pubkey@host:port"))?;
+    let pubkey: bitcoin::secp256k1::PublicKey = pk_str.parse()?;
+    let addr = addr_str
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("could not resolve {}", addr_str))?;
+    Ok((pubkey, addr))
 }
