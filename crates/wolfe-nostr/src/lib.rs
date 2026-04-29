@@ -47,6 +47,7 @@ pub struct NostrBridge {
     keys: Keys,
     profile_name: Option<String>,
     profile_about: Option<String>,
+    profile_picture: Option<String>,
 }
 
 /// Handle for sending events to the Nostr bridge from the main loop.
@@ -72,6 +73,7 @@ impl NostrBridge {
     ///
     /// Returns `(bridge, sender, client)` where `client` is a shared handle
     /// that can be used by RPC handlers to publish events or query relays.
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         secret_key: Option<&str>,
         relays: &[String],
@@ -80,6 +82,7 @@ impl NostrBridge {
         fee_oracle_interval_secs: u64,
         profile_name: Option<String>,
         profile_about: Option<String>,
+        profile_picture: Option<String>,
     ) -> Result<(Self, NostrSender, Arc<Client>), NostrError> {
         let keys = match secret_key {
             Some(sk) => Keys::parse(sk).map_err(|e| NostrError::InvalidKey(e.to_string()))?,
@@ -115,6 +118,7 @@ impl NostrBridge {
                 keys,
                 profile_name,
                 profile_about,
+                profile_picture,
             },
             NostrSender { tx },
             shared_client,
@@ -141,13 +145,22 @@ impl NostrBridge {
         );
 
         // Publish profile metadata (NIP-01 kind 0) if configured
-        if self.profile_name.is_some() || self.profile_about.is_some() {
+        if self.profile_name.is_some()
+            || self.profile_about.is_some()
+            || self.profile_picture.is_some()
+        {
             let mut metadata = Metadata::new();
             if let Some(ref name) = self.profile_name {
                 metadata = metadata.name(name);
             }
             if let Some(ref about) = self.profile_about {
                 metadata = metadata.about(about);
+            }
+            if let Some(ref picture) = self.profile_picture {
+                match Url::parse(picture) {
+                    Ok(url) => metadata = metadata.picture(url),
+                    Err(e) => warn!(picture, ?e, "invalid nostr.picture URL, skipping"),
+                }
             }
             match self.client.set_metadata(&metadata).await {
                 Ok(output) => {

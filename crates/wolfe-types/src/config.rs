@@ -286,6 +286,8 @@ pub struct NostrConfig {
     pub name: Option<String>,
     /// Profile about/bio text.
     pub about: Option<String>,
+    /// Profile picture URL (NIP-01 kind 0 metadata).
+    pub picture: Option<String>,
     /// Relay URLs to publish events to.
     pub relays: Vec<String>,
     /// Publish new block announcements to relays.
@@ -322,6 +324,8 @@ pub struct LightningConfig {
     pub max_channel_size_sat: u64,
     /// URL for Rapid Gossip Sync server (optional, speeds up initial gossip).
     pub rapid_gossip_sync_url: Option<String>,
+    /// Peers to keep connected to, periodically reconnecting as needed (pubkey@host:port).
+    pub persistent_peers: Vec<String>,
 }
 
 impl Default for LightningConfig {
@@ -336,6 +340,7 @@ impl Default for LightningConfig {
             min_channel_size_sat: 20_000,
             max_channel_size_sat: 16_777_215,
             rapid_gossip_sync_url: None,
+            persistent_peers: vec![],
         }
     }
 }
@@ -374,6 +379,7 @@ impl Default for NostrConfig {
             secret_key: None,
             name: None,
             about: None,
+            picture: None,
             relays: vec![
                 "wss://relay.damus.io".to_string(),
                 "wss://nos.lol".to_string(),

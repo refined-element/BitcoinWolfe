@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Service identity -->
+    <key>Label</key>
+    <string>com.bitcoinwolfe.node</string>
+
+    <!-- Binary and arguments -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__WOLFE_BINARY__</string>
+        <string>start</string>
+    </array>
+
+    <!-- Working directory (where wolfe.toml lives) -->
+    <key>WorkingDirectory</key>
+    <string>__WOLFE_DIR__</string>
+
+    <!-- Start on boot / login -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart if the process exits unexpectedly -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Wait 10 seconds before restarting after a crash -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- Logging. Path lives at the project root rather than under data/
+         because launchd opens these files BEFORE the program runs and will
+         not create missing parent directories. -->
+    <key>StandardOutPath</key>
+    <string>__WOLFE_DIR__/wolfe-launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>__WOLFE_DIR__/wolfe-launchd.log</string>
+</dict>
+</plist>

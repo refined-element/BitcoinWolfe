@@ -425,6 +425,79 @@ async fn main() -> Result<()> {
             }
         });
         info!("Lightning background processor started");
+
+        // Periodically (re)connect to persistent peers from config.
+        // Pubkeys are validated once here, then any persistent peer not
+        // currently connected is dialed every 60 seconds. Hostnames are
+        // re-resolved on each tick so DHCP/DNS changes on the LAN don't
+        // permanently break reconnection.
+        if !config.lightning.persistent_peers.is_empty() {
+            let mut valid_peers: Vec<(bitcoin::secp256k1::PublicKey, String, String)> = Vec::new();
+            for peer_str in &config.lightning.persistent_peers {
+                match split_ln_peer(peer_str) {
+                    Ok((pubkey, addr_str)) => {
+                        valid_peers.push((pubkey, addr_str, peer_str.clone()));
+                    }
+                    Err(e) => {
+                        warn!(%peer_str, %e, "invalid persistent_peers entry, skipping");
+                    }
+                }
+            }
+
+            if !valid_peers.is_empty() {
+                let valid_count = valid_peers.len();
+                let ln_reconnect = ln.clone();
+                let ln_reconnect_shutdown = shutdown.clone();
+                tokio::spawn(async move {
+                    // Brief delay to let the listener bind first
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                    loop {
+                        interval.tick().await;
+                        if ln_reconnect_shutdown.load(Ordering::Relaxed) {
+                            break;
+                        }
+
+                        let connected: std::collections::HashSet<bitcoin::secp256k1::PublicKey> =
+                            ln_reconnect
+                                .peer_manager()
+                                .list_peers()
+                                .into_iter()
+                                .map(|p| p.counterparty_node_id)
+                                .collect();
+
+                        for (pubkey, addr_str, peer_str) in &valid_peers {
+                            if connected.contains(pubkey) {
+                                continue;
+                            }
+                            let addr = match resolve_addr(addr_str).await {
+                                Ok(a) => a,
+                                Err(e) => {
+                                    debug!(%peer_str, ?e, "persistent peer DNS resolve failed, will retry");
+                                    continue;
+                                }
+                            };
+                            match ln_reconnect.connect_peer(*pubkey, addr).await {
+                                Ok(()) => info!(
+                                    %pubkey,
+                                    %addr,
+                                    "persistent Lightning peer connected"
+                                ),
+                                Err(e) => debug!(
+                                    %peer_str,
+                                    ?e,
+                                    "persistent peer not reachable, will retry"
+                                ),
+                            }
+                        }
+                    }
+                });
+                info!(
+                    valid = valid_count,
+                    "persistent Lightning peer reconnector started"
+                );
+            }
+        }
     }
 
     // ── Initialize RPC server ───────────────────────────────────────────
@@ -484,6 +557,7 @@ async fn main() -> Result<()> {
             config.nostr.fee_oracle_interval_secs,
             config.nostr.name.clone(),
             config.nostr.about.clone(),
+            config.nostr.picture.clone(),
         )
         .await
         {
@@ -899,9 +973,8 @@ async fn main() -> Result<()> {
                 }
             }
 
-            // Shutdown on Ctrl+C
-            _ = tokio::signal::ctrl_c() => {
-                info!("shutdown signal received");
+            // Shutdown on SIGINT (Ctrl+C) or SIGTERM (kill, systemctl stop, launchctl unload)
+            _ = shutdown_signal() => {
                 shutdown.store(true, Ordering::Relaxed);
                 break;
             }
@@ -1026,4 +1099,65 @@ fn prune_block_files(blocks_dir: &std::path::Path, target_bytes: u64) -> Result<
     }
 
     Ok(())
+}
+
+/// Parse a "pubkey@host:port" string. Validates the pubkey synchronously and
+/// returns the address portion as a string for later async resolution. Splitting
+/// pubkey parsing from DNS lookup lets us validate the static parts once at
+/// startup while still re-resolving hostnames each reconnect cycle.
+fn split_ln_peer(s: &str) -> Result<(bitcoin::secp256k1::PublicKey, String)> {
+    let (pk_str, addr_str) = s
+        .split_once('@')
+        .ok_or_else(|| anyhow::anyhow!("expected pubkey@host:port"))?;
+    let pubkey: bitcoin::secp256k1::PublicKey = pk_str.parse()?;
+    Ok((pubkey, addr_str.to_string()))
+}
+
+/// Resolve a "host:port" string to a SocketAddr without blocking the runtime.
+async fn resolve_addr(addr_str: &str) -> Result<std::net::SocketAddr> {
+    tokio::net::lookup_host(addr_str)
+        .await?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("could not resolve {}", addr_str))
+}
+
+/// Wait for any termination signal. On Unix this is SIGINT or SIGTERM, so
+/// `Ctrl+C`, `kill`, `systemctl stop`, and `launchctl unload` all trigger the
+/// same graceful shutdown path.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(e) => {
+                error!(
+                    ?e,
+                    "failed to install SIGTERM handler, falling back to Ctrl+C only"
+                );
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        let mut sigint = match signal(SignalKind::interrupt()) {
+            Ok(s) => s,
+            Err(e) => {
+                error!(
+                    ?e,
+                    "failed to install SIGINT handler, falling back to Ctrl+C only"
+                );
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = sigterm.recv() => info!("SIGTERM received"),
+            _ = sigint.recv() => info!("SIGINT received"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        info!("Ctrl+C received");
+    }
 }

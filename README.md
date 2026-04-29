@@ -79,6 +79,97 @@ The binary is at `target/release/wolfe`.
 ./target/release/wolfe --config my-config.toml start
 ```
 
+### Stop
+
+The node shuts down gracefully via any of these methods:
+
+```bash
+# From the terminal that started it
+Ctrl+C
+
+# Via JSON-RPC
+curl -s http://127.0.0.1:8332/ \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"stop"}'
+
+# Via signal (SIGINT or SIGTERM)
+kill -INT $(pgrep -f "wolfe start")   # or: kill $(pgrep -f "wolfe start")
+```
+
+You can also stop from the **Settings** page in the web dashboard.
+
+All methods trigger the same graceful shutdown: Lightning channel state is persisted, the consensus engine is interrupted cleanly, and peer connections are closed. Both `SIGINT` (Ctrl+C) and `SIGTERM` (default for `kill`, `systemctl stop`, and `launchctl unload`) are handled the same way.
+
+### Auto-Start on macOS (launchd)
+
+To have BitcoinWolfe start automatically on login and restart after crashes:
+
+```bash
+# 1. Copy the template plist
+cp config/com.bitcoinwolfe.node.plist ~/Library/LaunchAgents/
+
+# 2. Edit it — replace the placeholder paths with your actual paths:
+#    __WOLFE_BINARY__ → full path to the wolfe binary (e.g. /Users/you/BitcoinWolfe/target/release/wolfe)
+#    __WOLFE_DIR__    → full path to the project directory (e.g. /Users/you/BitcoinWolfe)
+nano ~/Library/LaunchAgents/com.bitcoinwolfe.node.plist
+
+# 3. Load the service
+launchctl load ~/Library/LaunchAgents/com.bitcoinwolfe.node.plist
+
+# 4. Verify it's running
+launchctl list | grep bitcoinwolfe
+curl -s http://127.0.0.1:8332/api/peers | head -c 100
+```
+
+To manage the service:
+
+```bash
+# Stop the service (and prevent auto-restart)
+launchctl unload ~/Library/LaunchAgents/com.bitcoinwolfe.node.plist
+
+# Reload after config changes
+launchctl unload ~/Library/LaunchAgents/com.bitcoinwolfe.node.plist
+launchctl load ~/Library/LaunchAgents/com.bitcoinwolfe.node.plist
+```
+
+> **Note:** The plist uses `KeepAlive` with `SuccessfulExit = false`, so launchd will restart the node if it crashes but not if you stop it intentionally via RPC `stop`, `Ctrl+C`, or the dashboard.
+>
+> `~/Library/LaunchAgents/` runs at user **login**, not at boot. For boot-time startup install the plist into `/Library/LaunchDaemons/` (requires `sudo`) and add a `UserName` key — note that `LaunchDaemons` run as root unless `UserName` is set.
+
+### Auto-Start on Linux (systemd)
+
+```bash
+# Create a service file
+sudo tee /etc/systemd/system/bitcoinwolfe.service << 'EOF'
+[Unit]
+Description=BitcoinWolfe Node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/path/to/BitcoinWolfe
+ExecStart=/path/to/BitcoinWolfe/target/release/wolfe start
+Restart=on-failure
+RestartSec=10
+# systemctl stop sends SIGTERM, which the node handles gracefully.
+# Give Lightning state and consensus enough time to persist before SIGKILL.
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enable and start
+sudo systemctl daemon-reload
+sudo systemctl enable bitcoinwolfe
+sudo systemctl start bitcoinwolfe
+
+# Check status
+sudo systemctl status bitcoinwolfe
+```
+
 ---
 
 ## CLI Usage
@@ -170,6 +261,11 @@ accept_inbound_channels = true
 min_channel_size_sat = 20000
 max_channel_size_sat = 16777215
 # rapid_gossip_sync_url = "https://rapidsync.lightningdevkit.org/snapshot"
+
+# Lightning peers that the node should keep connected. The reconnector
+# checks every 60 seconds and dials any listed peer that's currently
+# offline. Hostnames are re-resolved on each tick.
+# persistent_peers = ["02abc...@host.example.com:9735"]
 ```
 
 ### Nostr
