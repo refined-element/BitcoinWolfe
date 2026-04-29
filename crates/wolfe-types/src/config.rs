@@ -322,7 +322,7 @@ pub struct LightningConfig {
     pub max_channel_size_sat: u64,
     /// URL for Rapid Gossip Sync server (optional, speeds up initial gossip).
     pub rapid_gossip_sync_url: Option<String>,
-    /// Peers to automatically reconnect to on startup (pubkey@host:port).
+    /// Peers to keep connected to, periodically reconnecting as needed (pubkey@host:port).
     pub persistent_peers: Vec<String>,
 }
 

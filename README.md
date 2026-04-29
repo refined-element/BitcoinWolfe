@@ -92,17 +92,17 @@ curl -s http://127.0.0.1:8332/ \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"stop"}'
 
-# Via signal
-kill $(pgrep -f "wolfe start")
+# Via signal (SIGINT or SIGTERM)
+kill -INT $(pgrep -f "wolfe start")   # or: kill $(pgrep -f "wolfe start")
 ```
 
 You can also stop from the **Settings** page in the web dashboard.
 
-All methods trigger the same graceful shutdown: Lightning channel state is persisted, the consensus engine is interrupted cleanly, and peer connections are closed.
+All methods trigger the same graceful shutdown: Lightning channel state is persisted, the consensus engine is interrupted cleanly, and peer connections are closed. Both `SIGINT` (Ctrl+C) and `SIGTERM` (default for `kill`, `systemctl stop`, and `launchctl unload`) are handled the same way.
 
 ### Auto-Start on macOS (launchd)
 
-To have BitcoinWolfe start automatically on boot and restart after crashes:
+To have BitcoinWolfe start automatically on login and restart after crashes:
 
 ```bash
 # 1. Copy the template plist
@@ -133,6 +133,8 @@ launchctl load ~/Library/LaunchAgents/com.bitcoinwolfe.node.plist
 ```
 
 > **Note:** The plist uses `KeepAlive` with `SuccessfulExit = false`, so launchd will restart the node if it crashes but not if you stop it intentionally via RPC `stop`, `Ctrl+C`, or the dashboard.
+>
+> `~/Library/LaunchAgents/` runs at user **login**, not at boot. For boot-time startup install the plist into `/Library/LaunchDaemons/` (requires `sudo`) and add a `UserName` key — note that `LaunchDaemons` run as root unless `UserName` is set.
 
 ### Auto-Start on Linux (systemd)
 
@@ -151,6 +153,9 @@ WorkingDirectory=/path/to/BitcoinWolfe
 ExecStart=/path/to/BitcoinWolfe/target/release/wolfe start
 Restart=on-failure
 RestartSec=10
+# systemctl stop sends SIGTERM, which the node handles gracefully.
+# Give Lightning state and consensus enough time to persist before SIGKILL.
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target

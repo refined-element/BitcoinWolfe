@@ -33,10 +33,12 @@
     <key>ThrottleInterval</key>
     <integer>10</integer>
 
-    <!-- Logging -->
+    <!-- Logging. Path lives at the project root rather than under data/
+         because launchd opens these files BEFORE the program runs and will
+         not create missing parent directories. -->
     <key>StandardOutPath</key>
-    <string>__WOLFE_DIR__/data/wolfe-launchd.log</string>
+    <string>__WOLFE_DIR__/wolfe-launchd.log</string>
     <key>StandardErrorPath</key>
-    <string>__WOLFE_DIR__/data/wolfe-launchd.log</string>
+    <string>__WOLFE_DIR__/wolfe-launchd.log</string>
 </dict>
 </plist>
