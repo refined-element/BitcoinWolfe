@@ -557,6 +557,7 @@ async fn main() -> Result<()> {
             config.nostr.fee_oracle_interval_secs,
             config.nostr.name.clone(),
             config.nostr.about.clone(),
+            config.nostr.picture.clone(),
         )
         .await
         {

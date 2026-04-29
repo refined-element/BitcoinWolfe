@@ -286,6 +286,8 @@ pub struct NostrConfig {
     pub name: Option<String>,
     /// Profile about/bio text.
     pub about: Option<String>,
+    /// Profile picture URL (NIP-01 kind 0 metadata).
+    pub picture: Option<String>,
     /// Relay URLs to publish events to.
     pub relays: Vec<String>,
     /// Publish new block announcements to relays.
@@ -377,6 +379,7 @@ impl Default for NostrConfig {
             secret_key: None,
             name: None,
             about: None,
+            picture: None,
             relays: vec![
                 "wss://relay.damus.io".to_string(),
                 "wss://nos.lol".to_string(),
