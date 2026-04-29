@@ -135,7 +135,7 @@ impl PeerStore {
             let record: PeerRecord = serde_json::from_slice(val_guard.value())?;
             records.push(record);
         }
-        records.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+        records.sort_by_key(|r| std::cmp::Reverse(r.last_seen));
         Ok(records)
     }
 

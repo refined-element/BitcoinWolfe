@@ -544,11 +544,9 @@ impl SyncEngine {
                     debug!(%hash, "new block announced");
                     has_block_announcement = true;
                 }
-                Inventory::Transaction(txid) => {
-                    if !self.known_txids.contains(txid) {
-                        tx_requests.push(Inventory::WitnessTransaction(*txid));
-                        self.known_txids.insert(*txid);
-                    }
+                Inventory::Transaction(txid) if !self.known_txids.contains(txid) => {
+                    tx_requests.push(Inventory::WitnessTransaction(*txid));
+                    self.known_txids.insert(*txid);
                 }
                 Inventory::WTx(wtxid) => {
                     // Convert wtxid to txid for dedup (best effort — they may differ for segwit)
