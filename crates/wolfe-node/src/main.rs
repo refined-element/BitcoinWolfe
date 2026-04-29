@@ -1131,7 +1131,10 @@ async fn shutdown_signal() {
         let mut sigterm = match signal(SignalKind::terminate()) {
             Ok(s) => s,
             Err(e) => {
-                error!(?e, "failed to install SIGTERM handler, falling back to Ctrl+C only");
+                error!(
+                    ?e,
+                    "failed to install SIGTERM handler, falling back to Ctrl+C only"
+                );
                 let _ = tokio::signal::ctrl_c().await;
                 return;
             }
@@ -1139,7 +1142,10 @@ async fn shutdown_signal() {
         let mut sigint = match signal(SignalKind::interrupt()) {
             Ok(s) => s,
             Err(e) => {
-                error!(?e, "failed to install SIGINT handler, falling back to Ctrl+C only");
+                error!(
+                    ?e,
+                    "failed to install SIGINT handler, falling back to Ctrl+C only"
+                );
                 let _ = tokio::signal::ctrl_c().await;
                 return;
             }

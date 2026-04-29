@@ -73,6 +73,7 @@ impl NostrBridge {
     ///
     /// Returns `(bridge, sender, client)` where `client` is a shared handle
     /// that can be used by RPC handlers to publish events or query relays.
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         secret_key: Option<&str>,
         relays: &[String],
