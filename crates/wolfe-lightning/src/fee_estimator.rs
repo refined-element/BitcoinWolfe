@@ -64,8 +64,12 @@ impl FeeEstimator for WolfeFeeEstimator {
             // Normal priority: non-anchor channel commitment fee (locked at open)
             ConfirmationTarget::NonAnchorChannelFee => 1.0,
 
-            // Low priority: channel close minimum
-            ConfirmationTarget::ChannelCloseMinimum => self.sample_fee_rate_sat_per_vb(0.9),
+            // Channel close minimum: the LOWEST coop-close feerate we'll accept
+            // from a peer. Keep this low — a peer (e.g. lnd) proposing ~1 sat/vB
+            // on a quiet mempool is reasonable, and rejecting it forces a
+            // force-close, which is far more expensive than a cheap coop close.
+            // Sample a low percentile so we accept economical closes.
+            ConfirmationTarget::ChannelCloseMinimum => self.sample_fee_rate_sat_per_vb(0.1),
 
             // Minimum mempool fee
             ConfirmationTarget::MinAllowedAnchorChannelRemoteFee => self.mempool.min_fee_rate(),
@@ -87,7 +91,8 @@ impl FeeEstimator for WolfeFeeEstimator {
             ConfirmationTarget::UrgentOnChainSweep => 5_000,  // 20 sat/vB
             ConfirmationTarget::NonAnchorChannelFee => 253, // 1 sat/vB — commitment tx fee is locked at open
             ConfirmationTarget::AnchorChannelFee => 1_000,  // 4 sat/vB
-            ConfirmationTarget::ChannelCloseMinimum => 1_000, // 4 sat/vB
+            // 1 sat/vB: accept low coop-close fees rather than force-closing.
+            ConfirmationTarget::ChannelCloseMinimum => 253, // 1 sat/vB
             _ => 253,                                       // 1 sat/vB minimum
         };
 

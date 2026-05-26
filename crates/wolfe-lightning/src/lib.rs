@@ -8,7 +8,7 @@ pub mod types;
 
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -83,6 +83,9 @@ pub struct LightningManager {
     kv_store: Arc<WolfeKVStore>,
     event_tx: mpsc::Sender<LightningEvent>,
     has_channels: AtomicBool,
+    /// Counts `tick()` calls (≈1 per second) to gate LDK timer ticks to their
+    /// expected cadence (peer ~10s, channel ~60s) instead of every tick.
+    tick_count: AtomicU64,
     network: bitcoin::Network,
     wallet: Mutex<Option<Arc<Mutex<NodeWallet>>>>,
     seed: [u8; 32],
@@ -299,6 +302,7 @@ impl LightningManager {
                 kv_store,
                 event_tx,
                 has_channels,
+                tick_count: AtomicU64::new(0),
                 network,
                 wallet: Mutex::new(None),
                 seed,
@@ -622,9 +626,19 @@ impl LightningManager {
         // regularly or incoming HTLCs will never be settled.
         self.channel_manager.process_pending_htlc_forwards();
 
-        // LDK timer ticks (manages retries, channel state, etc.)
-        self.channel_manager.timer_tick_occurred();
-        self.peer_manager.timer_tick_occurred();
+        // LDK timer ticks must fire at their *documented* cadence, not on every
+        // tick(). PeerManager expects ~10s (it drives ping/pong keepalive — too
+        // fast makes pong deadlines fire prematurely and disconnects healthy
+        // peers, causing connection flapping). ChannelManager expects ~60s
+        // (its internal timeouts are counted in these ticks). tick() runs ≈1×/s,
+        // so gate by elapsed ticks.
+        let n = self.tick_count.fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_multiple_of(10) {
+            self.peer_manager.timer_tick_occurred();
+        }
+        if n.is_multiple_of(60) {
+            self.channel_manager.timer_tick_occurred();
+        }
         // Process pending peer manager events (sends gossip queries, etc.)
         self.peer_manager.process_events();
     }

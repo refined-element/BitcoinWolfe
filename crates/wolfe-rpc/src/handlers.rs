@@ -607,6 +607,134 @@ async fn dispatch_rpc(
             Ok(json!(result))
         }
 
+        // Reconcile LDK's local channel view against on-chain reality.
+        //
+        // This node can't answer it alone: libbitcoinkernel 0.2 exposes no
+        // UTXO lookup and the node prunes, so funding blocks may be gone from
+        // disk. Instead we ask a block explorer whether each channel's funding
+        // output is still unspent. If LDK lists a channel as ready but the
+        // funding output has been spent on-chain, the channel was closed
+        // (cooperatively or via force-close) and LDK's state has diverged.
+        //
+        // Params: [explorer_base_url?]  (default https://mempool.space)
+        "reconcilechannels" => {
+            let ln = state
+                .lightning()
+                .ok_or_else(|| RpcError::Lightning("lightning not enabled".to_string()))?;
+
+            let base = get_param_str(params, 0)
+                .unwrap_or("https://mempool.space")
+                .trim_end_matches('/')
+                .to_string();
+
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .map_err(|e| RpcError::Internal(format!("http client: {e}")))?;
+
+            let channels = ln.channel_manager().list_channels();
+            let mut results = Vec::with_capacity(channels.len());
+            let (mut open, mut closed, mut unknown, mut no_funding) = (0u32, 0u32, 0u32, 0u32);
+
+            for c in &channels {
+                let funding = c.funding_txo.map(|op| (op.txid.to_string(), op.index));
+
+                let (verdict, detail, onchain) = match &funding {
+                    None => {
+                        no_funding += 1;
+                        (
+                            "NO_FUNDING_TX",
+                            "channel has no funding outpoint yet (still negotiating)".to_string(),
+                            json!({ "checked": false }),
+                        )
+                    }
+                    Some((txid, vout)) => {
+                        match explorer_outspend(&client, &base, txid, *vout).await {
+                            Err(e) => {
+                                unknown += 1;
+                                (
+                                    "UNKNOWN",
+                                    format!("explorer lookup failed: {e}"),
+                                    json!({
+                                        "checked": false,
+                                        "explorer_url": format!("{base}/tx/{txid}"),
+                                    }),
+                                )
+                            }
+                            Ok(v) => {
+                                let spent =
+                                    v.get("spent").and_then(|x| x.as_bool()).unwrap_or(false);
+                                if spent {
+                                    closed += 1;
+                                    let stx = v.get("txid").and_then(|x| x.as_str());
+                                    let height =
+                                        v.pointer("/status/block_height").and_then(|x| x.as_u64());
+                                    let detail = format!(
+                                        "funding output SPENT on-chain{} — channel closed; LDK still reports is_channel_ready={} (state divergence)",
+                                        height.map(|h| format!(" at height {h}")).unwrap_or_default(),
+                                        c.is_channel_ready
+                                    );
+                                    (
+                                        "CLOSED_ONCHAIN",
+                                        detail,
+                                        json!({
+                                            "checked": true,
+                                            "funding_spent": true,
+                                            "spending_txid": stx,
+                                            "spent_block_height": height,
+                                            "explorer_url": format!("{base}/tx/{txid}"),
+                                        }),
+                                    )
+                                } else {
+                                    open += 1;
+                                    (
+                                        "OPEN_CONFIRMED",
+                                        "funding output unspent on-chain — channel genuinely open"
+                                            .to_string(),
+                                        json!({
+                                            "checked": true,
+                                            "funding_spent": false,
+                                            "explorer_url": format!("{base}/tx/{txid}"),
+                                        }),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                };
+
+                results.push(json!({
+                    "channel_id": hex::encode(c.channel_id.0),
+                    "counterparty": c.counterparty.node_id.to_string(),
+                    "capacity_sat": c.channel_value_satoshis,
+                    "is_outbound": c.is_outbound,
+                    "funding_outpoint": funding.map(|(t, v)| format!("{t}:{v}")),
+                    "ldk_view": {
+                        "is_channel_ready": c.is_channel_ready,
+                        "is_usable": c.is_usable,
+                        "short_channel_id": c.short_channel_id,
+                        "outbound_capacity_msat": c.outbound_capacity_msat,
+                        "inbound_capacity_msat": c.inbound_capacity_msat,
+                    },
+                    "onchain_view": onchain,
+                    "verdict": verdict,
+                    "detail": detail,
+                }));
+            }
+
+            Ok(json!({
+                "explorer": base,
+                "channels": results,
+                "summary": {
+                    "total": channels.len(),
+                    "open_confirmed": open,
+                    "closed_onchain": closed,
+                    "no_funding_tx": no_funding,
+                    "unknown": unknown,
+                },
+            }))
+        }
+
         "ln_listpeers" => {
             let ln = state
                 .lightning()
@@ -1011,6 +1139,26 @@ async fn dispatch_rpc(
 }
 
 // ─── Parameter extraction helpers ────────────────────────────────────────────
+
+/// Query a block explorer (esplora/mempool.space API) for the spend status of
+/// a transaction output. Returns the parsed JSON body, e.g.
+/// `{"spent":true,"txid":"<spending>","status":{"confirmed":true,"block_height":N}}`.
+async fn explorer_outspend(
+    client: &reqwest::Client,
+    base: &str,
+    txid: &str,
+    vout: u16,
+) -> Result<Value, String> {
+    let url = format!("{base}/api/tx/{txid}/outspend/{vout}");
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "explorer returned {} for {txid}:{vout} (funding tx may be unconfirmed or unknown)",
+            resp.status()
+        ));
+    }
+    resp.json::<Value>().await.map_err(|e| e.to_string())
+}
 
 fn get_param_str(params: Option<&Value>, index: usize) -> Option<&str> {
     params?.as_array()?.get(index)?.as_str()
