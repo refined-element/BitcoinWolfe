@@ -286,7 +286,16 @@ impl LightningManager {
             tx: event_tx.clone(),
         };
 
-        let has_channels = AtomicBool::new(!channel_manager.list_channels().is_empty());
+        // Enable full block processing if any channel state needs it. Open
+        // channels obviously do; closed channels with persisted ChannelMonitors
+        // also do — they may have outputs awaiting CSV maturity, HTLC timeouts,
+        // or breach-justice detection. Skipping block_connected for those would
+        // strand funds (e.g. force-close to_self outputs never emit
+        // SpendableOutputs).
+        let has_channels = AtomicBool::new(
+            !channel_manager.list_channels().is_empty()
+                || !chain_monitor.list_monitors().is_empty(),
+        );
 
         Ok((
             Self {
@@ -349,11 +358,16 @@ impl LightningManager {
     ///
     /// During IBD with no open channels, this is a fast no-op.
     pub fn block_connected(&self, block: &bitcoin::Block, height: u32) {
-        // Update has_channels flag if channels appeared since startup
+        // Update flag if any channel state appeared since startup. We must
+        // process every block whenever a ChannelMonitor exists — including
+        // monitors for already-closed channels still awaiting CSV maturity or
+        // breach-justice detection.
         if !self.has_channels.load(Ordering::Relaxed) {
-            if !self.channel_manager.list_channels().is_empty() {
+            if !self.channel_manager.list_channels().is_empty()
+                || !self.chain_monitor.list_monitors().is_empty()
+            {
                 self.has_channels.store(true, Ordering::Relaxed);
-                info!("channel detected — enabling full block processing for LDK");
+                info!("channel state detected — enabling full block processing for LDK");
             } else if !height.is_multiple_of(10000) {
                 // Skip during IBD if no channels exist (optimization)
                 return;
