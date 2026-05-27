@@ -881,12 +881,21 @@ async fn dispatch_rpc(
                 };
 
                 // Look up the funding-output's spending tx (if any)
-                let outspend =
-                    match explorer_outspend(&client, &base, &funding_op.txid.to_string(), funding_op.vout as u16).await {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-                let spent = outspend.get("spent").and_then(|x| x.as_bool()).unwrap_or(false);
+                let outspend = match explorer_outspend(
+                    &client,
+                    &base,
+                    &funding_op.txid.to_string(),
+                    funding_op.vout as u16,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let spent = outspend
+                    .get("spent")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
                 if !spent {
                     continue;
                 }
@@ -894,7 +903,10 @@ async fn dispatch_rpc(
                     Some(s) => s.to_string(),
                     None => continue,
                 };
-                let close_height = match outspend.pointer("/status/block_height").and_then(|x| x.as_u64()) {
+                let close_height = match outspend
+                    .pointer("/status/block_height")
+                    .and_then(|x| x.as_u64())
+                {
                     Some(h) => h as u32,
                     None => continue, // unconfirmed close — skip
                 };
@@ -928,13 +940,8 @@ async fn dispatch_rpc(
                 let mut already_spent: u32 = 0;
                 for d in raw_close_descriptors {
                     let op = d.spendable_outpoint();
-                    let outspend = explorer_outspend(
-                        &client,
-                        &base,
-                        &op.txid.to_string(),
-                        op.index,
-                    )
-                    .await;
+                    let outspend =
+                        explorer_outspend(&client, &base, &op.txid.to_string(), op.index).await;
                     let spent = match outspend {
                         Ok(v) => v.get("spent").and_then(|x| x.as_bool()).unwrap_or(false),
                         Err(_) => {
@@ -955,9 +962,9 @@ async fn dispatch_rpc(
                 for d in &close_descriptors {
                     use lightning::sign::SpendableOutputDescriptor as S;
                     let (kind, v, outp) = match d {
-                        S::StaticOutput { outpoint, output, .. } => {
-                            ("static_output", output.value.to_sat(), *outpoint)
-                        }
+                        S::StaticOutput {
+                            outpoint, output, ..
+                        } => ("static_output", output.value.to_sat(), *outpoint),
                         S::DelayedPaymentOutput(dp) => {
                             ("delayed_payment", dp.output.value.to_sat(), dp.outpoint)
                         }

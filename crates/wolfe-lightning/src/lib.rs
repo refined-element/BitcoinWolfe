@@ -31,7 +31,9 @@ use lightning::routing::scoring::{
     ProbabilisticScorer, ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters,
 };
 use lightning::routing::utxo::UtxoLookup;
-use lightning::sign::{KeysManager, NodeSigner, OutputSpender, SignerProvider, SpendableOutputDescriptor};
+use lightning::sign::{
+    KeysManager, NodeSigner, OutputSpender, SignerProvider, SpendableOutputDescriptor,
+};
 use lightning::util::config::UserConfig;
 use lightning::util::persist::{KVStoreSync, MonitorUpdatingPersister};
 use lightning::util::ser::ReadableArgs;
