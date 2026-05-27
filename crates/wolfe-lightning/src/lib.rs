@@ -31,7 +31,7 @@ use lightning::routing::scoring::{
     ProbabilisticScorer, ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters,
 };
 use lightning::routing::utxo::UtxoLookup;
-use lightning::sign::{KeysManager, NodeSigner};
+use lightning::sign::{KeysManager, NodeSigner, OutputSpender, SignerProvider, SpendableOutputDescriptor};
 use lightning::util::config::UserConfig;
 use lightning::util::persist::{KVStoreSync, MonitorUpdatingPersister};
 use lightning::util::ser::ReadableArgs;
@@ -680,6 +680,85 @@ impl LightningManager {
                 warn!(?e, "failed to persist scorer");
             }
         }
+    }
+
+    /// Current fee rate for on-chain sweeps in sat/kw, as used by the
+    /// internal SpendableOutputs sweeper.
+    pub fn sweep_fee_rate_sat_per_kw(&self) -> u32 {
+        self.fee_estimator.sweep_fee_rate()
+    }
+
+    /// The Bitcoin network this Lightning manager operates on.
+    pub fn network(&self) -> bitcoin::Network {
+        self.network
+    }
+
+    /// Return the P2WPKH address where LDK sweeps SpendableOutputs by default.
+    ///
+    /// Coop-close to_remote outputs and force-close to_self sweeps both land
+    /// here. Useful for explorer queries and for `sweep_outpoints` callers
+    /// that need to know where to look.
+    pub fn keys_destination_address(&self) -> Result<bitcoin::Address, LightningError> {
+        let script = self
+            .keys_manager
+            .get_destination_script([0u8; 32])
+            .map_err(|_| LightningError::KeyManagement("get_destination_script failed".into()))?;
+        bitcoin::Address::from_script(&script, self.network)
+            .map_err(|e| LightningError::KeyManagement(format!("script→address: {e}")))
+    }
+
+    /// Build and broadcast a transaction sweeping the given UTXOs (which must
+    /// live at the KeysManager's destination script) to `dest_script`.
+    ///
+    /// Caller is responsible for fetching the UTXO set (e.g. via a block
+    /// explorer) and passing `(outpoint, txout)` pairs. We synthesize
+    /// `StaticOutput` descriptors and let `KeysManager` sign them — this works
+    /// because LDK's StaticOutput signing path keys off `output.script_pubkey`
+    /// rather than any channel-specific state, so any UTXO at our destination
+    /// script is signable regardless of how it got there.
+    pub fn sweep_outpoints(
+        &self,
+        inputs: Vec<(bitcoin::OutPoint, bitcoin::TxOut)>,
+        dest_script: bitcoin::ScriptBuf,
+        fee_rate_sat_per_kw: u32,
+    ) -> Result<bitcoin::Txid, LightningError> {
+        use bitcoin::secp256k1::Secp256k1;
+
+        if inputs.is_empty() {
+            return Err(LightningError::KeyManagement("no inputs to sweep".into()));
+        }
+
+        let descriptors: Vec<SpendableOutputDescriptor> = inputs
+            .into_iter()
+            .map(|(op, txout)| SpendableOutputDescriptor::StaticOutput {
+                outpoint: lightning::chain::transaction::OutPoint {
+                    txid: op.txid,
+                    index: op.vout as u16,
+                },
+                output: txout,
+                channel_keys_id: None,
+            })
+            .collect();
+        let descriptor_refs: Vec<&SpendableOutputDescriptor> = descriptors.iter().collect();
+
+        let secp = Secp256k1::new();
+        let tx = self
+            .keys_manager
+            .spend_spendable_outputs(
+                &descriptor_refs,
+                Vec::new(),
+                dest_script,
+                fee_rate_sat_per_kw,
+                None,
+                &secp,
+            )
+            .map_err(|_| LightningError::KeyManagement("spend_spendable_outputs failed".into()))?;
+
+        let txid = tx.compute_txid();
+        info!(%txid, "broadcasting external sweep transaction");
+        use lightning::chain::chaininterface::BroadcasterInterface;
+        self.broadcaster.broadcast_transactions(&[&tx]);
+        Ok(txid)
     }
 
     /// Graceful shutdown.

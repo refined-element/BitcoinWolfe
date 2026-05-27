@@ -735,6 +735,160 @@ async fn dispatch_rpc(
             }))
         }
 
+        // Sweep UTXOs sitting at LDK's KeysManager destination address to an
+        // external address (e.g. an lnd `lncli newaddress` output). Useful
+        // after channel closes have produced LDK-controlled sweep outputs
+        // that the BDK wallet doesn't know about.
+        //
+        // Params:
+        //   0: destination address (required, must match node network)
+        //   1: fee_rate sat/vB (optional, default = mempool sweep rate)
+        //   2: explorer base URL (optional, default https://mempool.space)
+        //   3: include_unconfirmed bool (optional, default false — set true
+        //      to spend in-mempool UTXOs as CPFP children)
+        //
+        // Returns: txid + UTXO list, or dry-run info if no UTXOs found.
+        "ln_sweep_to_address" => {
+            let ln = state
+                .lightning()
+                .ok_or_else(|| RpcError::Lightning("lightning not enabled".to_string()))?;
+
+            let dest_str = get_param_str(params, 0)
+                .ok_or_else(|| RpcError::InvalidParams("destination address required".into()))?;
+
+            let fee_rate_sat_per_vb = get_param_i64(params, 1).map(|v| v.max(1) as u32);
+            let base = get_param_str(params, 2)
+                .unwrap_or("https://mempool.space")
+                .trim_end_matches('/')
+                .to_string();
+            let include_unconfirmed = get_param_bool(params, 3).unwrap_or(false);
+
+            // Resolve KeysManager destination address
+            let src_addr = ln
+                .keys_destination_address()
+                .map_err(|e| RpcError::Lightning(format!("destination: {e}")))?;
+
+            // Parse destination address and check network matches
+            let parsed_dest = dest_str
+                .parse::<bitcoin::Address<_>>()
+                .map_err(|e| RpcError::InvalidParams(format!("bad address: {e}")))?;
+            let dest_addr = parsed_dest
+                .require_network(ln.network())
+                .map_err(|e| RpcError::InvalidParams(format!("network mismatch: {e}")))?;
+            let dest_script = dest_addr.script_pubkey();
+
+            // Fetch UTXOs from explorer
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .map_err(|e| RpcError::Internal(format!("http client: {e}")))?;
+
+            let url = format!("{base}/api/address/{src_addr}/utxo");
+            let resp = client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| RpcError::Internal(format!("explorer fetch: {e}")))?;
+            if !resp.status().is_success() {
+                return Err(RpcError::Internal(format!(
+                    "explorer returned {} for {url}",
+                    resp.status()
+                )));
+            }
+            let utxos: Vec<Value> = resp
+                .json()
+                .await
+                .map_err(|e| RpcError::Internal(format!("explorer parse: {e}")))?;
+
+            // Filter and convert to (OutPoint, TxOut)
+            let mut inputs: Vec<(bitcoin::OutPoint, bitcoin::TxOut)> = Vec::new();
+            let mut skipped_unconfirmed: u32 = 0;
+            let mut total_in_sat: u64 = 0;
+            let mut utxo_summary: Vec<Value> = Vec::new();
+            for u in &utxos {
+                let txid_s = u
+                    .get("txid")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| RpcError::Internal("utxo missing txid".into()))?;
+                let vout = u
+                    .get("vout")
+                    .and_then(|x| x.as_u64())
+                    .ok_or_else(|| RpcError::Internal("utxo missing vout".into()))?
+                    as u32;
+                let value = u
+                    .get("value")
+                    .and_then(|x| x.as_u64())
+                    .ok_or_else(|| RpcError::Internal("utxo missing value".into()))?;
+                let confirmed = u
+                    .pointer("/status/confirmed")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
+                let height = u.pointer("/status/block_height").and_then(|x| x.as_u64());
+
+                if !confirmed && !include_unconfirmed {
+                    skipped_unconfirmed += 1;
+                    utxo_summary.push(json!({
+                        "txid": txid_s, "vout": vout, "value_sat": value,
+                        "confirmed": false, "included": false,
+                        "note": "skipped (pass include_unconfirmed=true to spend as CPFP)",
+                    }));
+                    continue;
+                }
+
+                let txid: bitcoin::Txid = txid_s
+                    .parse()
+                    .map_err(|e| RpcError::Internal(format!("bad txid {txid_s}: {e}")))?;
+                inputs.push((
+                    bitcoin::OutPoint { txid, vout },
+                    bitcoin::TxOut {
+                        value: bitcoin::Amount::from_sat(value),
+                        script_pubkey: src_addr.script_pubkey(),
+                    },
+                ));
+                total_in_sat += value;
+                utxo_summary.push(json!({
+                    "txid": txid_s, "vout": vout, "value_sat": value,
+                    "confirmed": confirmed, "block_height": height, "included": true,
+                }));
+            }
+
+            if inputs.is_empty() {
+                return Ok(json!({
+                    "txid": null,
+                    "broadcast": false,
+                    "from_address": src_addr.to_string(),
+                    "to_address": dest_addr.to_string(),
+                    "utxos": utxo_summary,
+                    "skipped_unconfirmed": skipped_unconfirmed,
+                    "detail": "no eligible UTXOs to sweep",
+                }));
+            }
+
+            // Convert fee rate sat/vB → sat/kw (×250)
+            let sat_per_kw: u32 = match fee_rate_sat_per_vb {
+                Some(r) => r.saturating_mul(250).max(253),
+                None => ln.sweep_fee_rate_sat_per_kw(),
+            };
+
+            let txid = ln
+                .sweep_outpoints(inputs, dest_script, sat_per_kw)
+                .map_err(|e| RpcError::Lightning(format!("sweep: {e}")))?;
+
+            Ok(json!({
+                "txid": txid.to_string(),
+                "broadcast": true,
+                "from_address": src_addr.to_string(),
+                "to_address": dest_addr.to_string(),
+                "fee_rate_sat_per_kw": sat_per_kw,
+                "fee_rate_sat_per_vb": sat_per_kw / 250,
+                "total_input_sat": total_in_sat,
+                "input_count": utxo_summary.iter().filter(|v| v.get("included").and_then(|x| x.as_bool()) == Some(true)).count(),
+                "skipped_unconfirmed": skipped_unconfirmed,
+                "utxos": utxo_summary,
+                "explorer_url": format!("{base}/tx/{txid}"),
+            }))
+        }
+
         "ln_listpeers" => {
             let ln = state
                 .lightning()
