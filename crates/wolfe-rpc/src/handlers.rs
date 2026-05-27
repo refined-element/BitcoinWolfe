@@ -735,10 +735,19 @@ async fn dispatch_rpc(
             }))
         }
 
-        // Sweep UTXOs sitting at LDK's KeysManager destination address to an
-        // external address (e.g. an lnd `lncli newaddress` output). Useful
-        // after channel closes have produced LDK-controlled sweep outputs
-        // that the BDK wallet doesn't know about.
+        // Sweep all LDK-controlled funds to an external address (e.g. an
+        // lnd `lncli newaddress` output). Bundles two sources:
+        //
+        //   (a) UTXOs at the KeysManager destination script — these are the
+        //       results of prior LDK SpendableOutputs sweeps (P2WPKH).
+        //
+        //   (b) Pending close-related claims from any ChannelMonitor — for
+        //       each monitor whose funding outpoint is on-chain-spent, we ask
+        //       LDK for the descriptors corresponding to the close tx, which
+        //       includes CSV-locked to_self outputs from force-closes.
+        //
+        // Combining both sources in one transaction avoids dust-output
+        // failures that otherwise plague tiny force-close to_self sweeps.
         //
         // Params:
         //   0: destination address (required, must match node network)
@@ -747,7 +756,7 @@ async fn dispatch_rpc(
         //   3: include_unconfirmed bool (optional, default false — set true
         //      to spend in-mempool UTXOs as CPFP children)
         //
-        // Returns: txid + UTXO list, or dry-run info if no UTXOs found.
+        // Returns: txid + bundle summary, or dry-run info if no inputs found.
         "ln_sweep_to_address" => {
             let ln = state
                 .lightning()
@@ -800,8 +809,8 @@ async fn dispatch_rpc(
                 .await
                 .map_err(|e| RpcError::Internal(format!("explorer parse: {e}")))?;
 
-            // Filter and convert to (OutPoint, TxOut)
-            let mut inputs: Vec<(bitcoin::OutPoint, bitcoin::TxOut)> = Vec::new();
+            // ─── (a) Synthesize StaticOutput descriptors from destination UTXOs ──
+            let mut descriptors: Vec<lightning::sign::SpendableOutputDescriptor> = Vec::new();
             let mut skipped_unconfirmed: u32 = 0;
             let mut total_in_sat: u64 = 0;
             let mut utxo_summary: Vec<Value> = Vec::new();
@@ -830,6 +839,7 @@ async fn dispatch_rpc(
                     utxo_summary.push(json!({
                         "txid": txid_s, "vout": vout, "value_sat": value,
                         "confirmed": false, "included": false,
+                        "kind": "static_output",
                         "note": "skipped (pass include_unconfirmed=true to spend as CPFP)",
                     }));
                     continue;
@@ -838,29 +848,158 @@ async fn dispatch_rpc(
                 let txid: bitcoin::Txid = txid_s
                     .parse()
                     .map_err(|e| RpcError::Internal(format!("bad txid {txid_s}: {e}")))?;
-                inputs.push((
-                    bitcoin::OutPoint { txid, vout },
-                    bitcoin::TxOut {
+                descriptors.push(lightning::sign::SpendableOutputDescriptor::StaticOutput {
+                    outpoint: lightning::chain::transaction::OutPoint {
+                        txid,
+                        index: vout as u16,
+                    },
+                    output: bitcoin::TxOut {
                         value: bitcoin::Amount::from_sat(value),
                         script_pubkey: src_addr.script_pubkey(),
                     },
-                ));
+                    channel_keys_id: None,
+                });
                 total_in_sat += value;
                 utxo_summary.push(json!({
                     "txid": txid_s, "vout": vout, "value_sat": value,
                     "confirmed": confirmed, "block_height": height, "included": true,
+                    "kind": "static_output",
                 }));
             }
 
-            if inputs.is_empty() {
+            // ─── (b) Pending close-channel descriptors from ChannelMonitors ──
+            // For each monitor whose funding outpoint is spent on-chain, ask
+            // LDK what's claimable from the close transaction. This captures
+            // CSV-locked to_self outputs that the user's automatic sweep may
+            // have failed to broadcast (dust output, network policy, etc.).
+            let monitor_ids = ln.list_channel_monitor_ids();
+            let mut close_summary: Vec<Value> = Vec::new();
+            for cid in &monitor_ids {
+                let funding_op = match ln.monitor_funding_outpoint(*cid) {
+                    Some(op) => op,
+                    None => continue,
+                };
+
+                // Look up the funding-output's spending tx (if any)
+                let outspend =
+                    match explorer_outspend(&client, &base, &funding_op.txid.to_string(), funding_op.vout as u16).await {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                let spent = outspend.get("spent").and_then(|x| x.as_bool()).unwrap_or(false);
+                if !spent {
+                    continue;
+                }
+                let close_txid_s = match outspend.get("txid").and_then(|x| x.as_str()) {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                };
+                let close_height = match outspend.pointer("/status/block_height").and_then(|x| x.as_u64()) {
+                    Some(h) => h as u32,
+                    None => continue, // unconfirmed close — skip
+                };
+
+                // Fetch raw tx hex and deserialize
+                let hex_url = format!("{base}/api/tx/{close_txid_s}/hex");
+                let close_tx: bitcoin::Transaction = match client.get(&hex_url).send().await {
+                    Ok(r) if r.status().is_success() => match r.text().await {
+                        Ok(hex) => match hex::decode(hex.trim()) {
+                            Ok(bytes) => match bitcoin::consensus::deserialize(&bytes) {
+                                Ok(tx) => tx,
+                                Err(_) => continue,
+                            },
+                            Err(_) => continue,
+                        },
+                        Err(_) => continue,
+                    },
+                    _ => continue,
+                };
+
+                let raw_close_descriptors =
+                    ln.monitor_spendable_outputs(*cid, &close_tx, close_height);
+
+                // Filter out descriptors whose outpoints are already spent
+                // on-chain. LDK's get_spendable_outputs replays descriptors
+                // from the close tx regardless of subsequent spends, so we
+                // need to verify each is actually still claimable to avoid
+                // double-spend attempts.
+                let mut close_descriptors: Vec<lightning::sign::SpendableOutputDescriptor> =
+                    Vec::new();
+                let mut already_spent: u32 = 0;
+                for d in raw_close_descriptors {
+                    let op = d.spendable_outpoint();
+                    let outspend = explorer_outspend(
+                        &client,
+                        &base,
+                        &op.txid.to_string(),
+                        op.index,
+                    )
+                    .await;
+                    let spent = match outspend {
+                        Ok(v) => v.get("spent").and_then(|x| x.as_bool()).unwrap_or(false),
+                        Err(_) => {
+                            // explorer flaked — be conservative, skip
+                            already_spent += 1;
+                            continue;
+                        }
+                    };
+                    if spent {
+                        already_spent += 1;
+                        continue;
+                    }
+                    close_descriptors.push(d);
+                }
+
+                let count = close_descriptors.len();
+                let mut value_sum: u64 = 0;
+                for d in &close_descriptors {
+                    use lightning::sign::SpendableOutputDescriptor as S;
+                    let (kind, v, outp) = match d {
+                        S::StaticOutput { outpoint, output, .. } => {
+                            ("static_output", output.value.to_sat(), *outpoint)
+                        }
+                        S::DelayedPaymentOutput(dp) => {
+                            ("delayed_payment", dp.output.value.to_sat(), dp.outpoint)
+                        }
+                        S::StaticPaymentOutput(sp) => {
+                            ("static_payment", sp.output.value.to_sat(), sp.outpoint)
+                        }
+                    };
+                    value_sum += v;
+                    utxo_summary.push(json!({
+                        "txid": outp.txid.to_string(),
+                        "vout": outp.index,
+                        "value_sat": v,
+                        "confirmed": true,
+                        "block_height": close_height,
+                        "included": true,
+                        "kind": kind,
+                        "channel_id": hex::encode(cid.0),
+                    }));
+                }
+                total_in_sat += value_sum;
+                close_summary.push(json!({
+                    "channel_id": hex::encode(cid.0),
+                    "funding_outpoint": format!("{}:{}", funding_op.txid, funding_op.vout),
+                    "close_txid": close_txid_s,
+                    "close_block_height": close_height,
+                    "descriptors_recovered": count,
+                    "descriptors_skipped_already_spent": already_spent,
+                    "total_value_sat": value_sum,
+                }));
+                descriptors.extend(close_descriptors);
+            }
+
+            if descriptors.is_empty() {
                 return Ok(json!({
                     "txid": null,
                     "broadcast": false,
                     "from_address": src_addr.to_string(),
                     "to_address": dest_addr.to_string(),
                     "utxos": utxo_summary,
+                    "closed_channels": close_summary,
                     "skipped_unconfirmed": skipped_unconfirmed,
-                    "detail": "no eligible UTXOs to sweep",
+                    "detail": "no eligible inputs found",
                 }));
             }
 
@@ -871,7 +1010,7 @@ async fn dispatch_rpc(
             };
 
             let txid = ln
-                .sweep_outpoints(inputs, dest_script, sat_per_kw)
+                .sweep_descriptors(descriptors, dest_script, sat_per_kw)
                 .map_err(|e| RpcError::Lightning(format!("sweep: {e}")))?;
 
             Ok(json!({
@@ -885,6 +1024,7 @@ async fn dispatch_rpc(
                 "input_count": utxo_summary.iter().filter(|v| v.get("included").and_then(|x| x.as_bool()) == Some(true)).count(),
                 "skipped_unconfirmed": skipped_unconfirmed,
                 "utxos": utxo_summary,
+                "closed_channels": close_summary,
                 "explorer_url": format!("{base}/tx/{txid}"),
             }))
         }

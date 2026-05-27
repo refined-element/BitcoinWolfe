@@ -707,38 +707,29 @@ impl LightningManager {
             .map_err(|e| LightningError::KeyManagement(format!("script→address: {e}")))
     }
 
-    /// Build and broadcast a transaction sweeping the given UTXOs (which must
-    /// live at the KeysManager's destination script) to `dest_script`.
+    /// Build and broadcast a sweep transaction from arbitrary
+    /// `SpendableOutputDescriptor`s to `dest_script`.
     ///
-    /// Caller is responsible for fetching the UTXO set (e.g. via a block
-    /// explorer) and passing `(outpoint, txout)` pairs. We synthesize
-    /// `StaticOutput` descriptors and let `KeysManager` sign them — this works
-    /// because LDK's StaticOutput signing path keys off `output.script_pubkey`
-    /// rather than any channel-specific state, so any UTXO at our destination
-    /// script is signable regardless of how it got there.
-    pub fn sweep_outpoints(
+    /// Callers can mix `StaticOutput` (synthesized from on-chain UTXOs at our
+    /// destination script — see `sweep_outpoints`) with
+    /// `DelayedPaymentOutput` / `StaticPaymentOutput` from closed-channel
+    /// monitors (see `monitor_spendable_outputs`) in a single tx, since
+    /// `KeysManager::spend_spendable_outputs` signs each descriptor variant
+    /// independently.
+    pub fn sweep_descriptors(
         &self,
-        inputs: Vec<(bitcoin::OutPoint, bitcoin::TxOut)>,
+        descriptors: Vec<SpendableOutputDescriptor>,
         dest_script: bitcoin::ScriptBuf,
         fee_rate_sat_per_kw: u32,
     ) -> Result<bitcoin::Txid, LightningError> {
         use bitcoin::secp256k1::Secp256k1;
 
-        if inputs.is_empty() {
-            return Err(LightningError::KeyManagement("no inputs to sweep".into()));
+        if descriptors.is_empty() {
+            return Err(LightningError::KeyManagement(
+                "no descriptors to sweep".into(),
+            ));
         }
 
-        let descriptors: Vec<SpendableOutputDescriptor> = inputs
-            .into_iter()
-            .map(|(op, txout)| SpendableOutputDescriptor::StaticOutput {
-                outpoint: lightning::chain::transaction::OutPoint {
-                    txid: op.txid,
-                    index: op.vout as u16,
-                },
-                output: txout,
-                channel_keys_id: None,
-            })
-            .collect();
         let descriptor_refs: Vec<&SpendableOutputDescriptor> = descriptors.iter().collect();
 
         let secp = Secp256k1::new();
@@ -755,10 +746,73 @@ impl LightningManager {
             .map_err(|_| LightningError::KeyManagement("spend_spendable_outputs failed".into()))?;
 
         let txid = tx.compute_txid();
-        info!(%txid, "broadcasting external sweep transaction");
+        info!(%txid, descriptor_count = descriptor_refs.len(), "broadcasting external sweep transaction");
         use lightning::chain::chaininterface::BroadcasterInterface;
         self.broadcaster.broadcast_transactions(&[&tx]);
         Ok(txid)
+    }
+
+    /// Build and broadcast a transaction sweeping the given UTXOs at our
+    /// KeysManager destination script to `dest_script`. Convenience wrapper
+    /// over `sweep_descriptors` that synthesizes `StaticOutput` descriptors.
+    pub fn sweep_outpoints(
+        &self,
+        inputs: Vec<(bitcoin::OutPoint, bitcoin::TxOut)>,
+        dest_script: bitcoin::ScriptBuf,
+        fee_rate_sat_per_kw: u32,
+    ) -> Result<bitcoin::Txid, LightningError> {
+        if inputs.is_empty() {
+            return Err(LightningError::KeyManagement("no inputs to sweep".into()));
+        }
+        let descriptors: Vec<SpendableOutputDescriptor> = inputs
+            .into_iter()
+            .map(|(op, txout)| SpendableOutputDescriptor::StaticOutput {
+                outpoint: lightning::chain::transaction::OutPoint {
+                    txid: op.txid,
+                    index: op.vout as u16,
+                },
+                output: txout,
+                channel_keys_id: None,
+            })
+            .collect();
+        self.sweep_descriptors(descriptors, dest_script, fee_rate_sat_per_kw)
+    }
+
+    /// Return all channel monitor IDs known to the chain monitor. Includes
+    /// monitors for closed channels — those track on-chain claim state until
+    /// fully resolved.
+    pub fn list_channel_monitor_ids(&self) -> Vec<lightning::ln::types::ChannelId> {
+        self.chain_monitor.list_monitors()
+    }
+
+    /// Return the funding outpoint for a given channel monitor, if it exists.
+    /// Useful for explorer queries to find a closed channel's close tx.
+    pub fn monitor_funding_outpoint(
+        &self,
+        channel_id: lightning::ln::types::ChannelId,
+    ) -> Option<bitcoin::OutPoint> {
+        let mon = self.chain_monitor.get_monitor(channel_id).ok()?;
+        let op = mon.get_funding_txo();
+        Some(bitcoin::OutPoint {
+            txid: op.txid,
+            vout: op.index as u32,
+        })
+    }
+
+    /// Ask a channel monitor for the spendable output descriptors yielded by
+    /// `tx` (which must be a tx that spent the channel's funding output, e.g.
+    /// a coop-close or force-close commitment, and which has reached enough
+    /// confirmations relative to to_self_delay/anti-reorg).
+    pub fn monitor_spendable_outputs(
+        &self,
+        channel_id: lightning::ln::types::ChannelId,
+        tx: &bitcoin::Transaction,
+        confirmation_height: u32,
+    ) -> Vec<SpendableOutputDescriptor> {
+        match self.chain_monitor.get_monitor(channel_id) {
+            Ok(mon) => mon.get_spendable_outputs(tx, confirmation_height),
+            Err(_) => Vec::new(),
+        }
     }
 
     /// Graceful shutdown.
