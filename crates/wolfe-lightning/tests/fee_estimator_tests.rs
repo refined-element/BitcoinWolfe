@@ -35,12 +35,14 @@ fn empty_mempool_returns_floor() {
     let mempool = make_mempool();
     let estimator = WolfeFeeEstimator::new(mempool);
 
-    // With empty mempool, targets return their safety floor (not raw 253)
-    // ChannelCloseMinimum floor is 1000 sat/kw (4 sat/vB)
+    // With empty mempool, ChannelCloseMinimum returns its safety floor.
+    // The floor is intentionally low (253 sat/kw = 1 sat/vB) — this is the
+    // LOWEST coop-close feerate we'll accept from a peer, and rejecting an
+    // economical close forces a far more expensive force-close.
     let fee = estimator.get_est_sat_per_1000_weight(ConfirmationTarget::ChannelCloseMinimum);
     assert_eq!(
-        fee, 1000,
-        "empty mempool should return ChannelCloseMinimum floor of 1000 sat/kw"
+        fee, 253,
+        "empty mempool should return ChannelCloseMinimum floor of 253 sat/kw (1 sat/vB)"
     );
 
     // MinAllowed targets have no elevated floor (just 253 sat/kw)
