@@ -414,9 +414,12 @@ fn fee_floor_channel_close_minimum() {
     let estimator = WolfeFeeEstimator::new(mempool);
 
     let fee = estimator.get_est_sat_per_1000_weight(ConfirmationTarget::ChannelCloseMinimum);
+    // ChannelCloseMinimum is the LOWEST coop-close feerate we'll accept from
+    // a peer. Keep this at LDK's minimum (253 sat/kw = 1 sat/vB): rejecting
+    // an economical coop close forces a far more expensive force-close.
     assert!(
-        fee >= 1_000,
-        "ChannelCloseMinimum floor should be 1000, got {}",
+        fee >= 253,
+        "ChannelCloseMinimum floor should be at least 253, got {}",
         fee
     );
 }
