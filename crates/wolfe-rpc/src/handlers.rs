@@ -781,7 +781,8 @@ async fn dispatch_rpc(
         // Params:
         //   0: destination address (required, must match node network)
         //   1: fee_rate sat/vB (optional, default = mempool sweep rate)
-        //   2: explorer base URL (optional, default https://mempool.space)
+        //   2: explorer base URL (optional, default: network-appropriate
+        //      mempool.space instance; required on regtest)
         //   3: include_unconfirmed bool (optional, default false — set true
         //      to spend in-mempool UTXOs as CPFP children)
         //
@@ -795,10 +796,10 @@ async fn dispatch_rpc(
                 .ok_or_else(|| RpcError::InvalidParams("destination address required".into()))?;
 
             let fee_rate_sat_per_vb = get_param_i64(params, 1).map(|v| v.max(1) as u32);
-            let base = get_param_str(params, 2)
-                .unwrap_or("https://mempool.space")
-                .trim_end_matches('/')
-                .to_string();
+            let base = match get_param_str(params, 2) {
+                Some(raw) => validate_explorer_base(raw)?,
+                None => default_explorer_base(state.network)?.to_string(),
+            };
             let include_unconfirmed = get_param_bool(params, 3).unwrap_or(false);
 
             // Resolve KeysManager destination address
