@@ -813,10 +813,7 @@ async fn dispatch_rpc(
             let dest_script = dest_addr.script_pubkey();
 
             // Fetch UTXOs from explorer
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .map_err(|e| RpcError::Internal(format!("http client: {e}")))?;
+            let client = explorer_client(&base).await?;
 
             let url = format!("{base}/api/address/{src_addr}/utxo");
             let resp = client
