@@ -8,7 +8,7 @@ pub mod types;
 
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,7 +31,9 @@ use lightning::routing::scoring::{
     ProbabilisticScorer, ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters,
 };
 use lightning::routing::utxo::UtxoLookup;
-use lightning::sign::{KeysManager, NodeSigner};
+use lightning::sign::{
+    KeysManager, NodeSigner, OutputSpender, SignerProvider, SpendableOutputDescriptor,
+};
 use lightning::util::config::UserConfig;
 use lightning::util::persist::{KVStoreSync, MonitorUpdatingPersister};
 use lightning::util::ser::ReadableArgs;
@@ -83,6 +85,9 @@ pub struct LightningManager {
     kv_store: Arc<WolfeKVStore>,
     event_tx: mpsc::Sender<LightningEvent>,
     has_channels: AtomicBool,
+    /// Counts `tick()` calls (≈1 per second) to gate LDK timer ticks to their
+    /// expected cadence (peer ~10s, channel ~60s) instead of every tick.
+    tick_count: AtomicU64,
     network: bitcoin::Network,
     wallet: Mutex<Option<Arc<Mutex<NodeWallet>>>>,
     seed: [u8; 32],
@@ -283,7 +288,16 @@ impl LightningManager {
             tx: event_tx.clone(),
         };
 
-        let has_channels = AtomicBool::new(!channel_manager.list_channels().is_empty());
+        // Enable full block processing if any channel state needs it. Open
+        // channels obviously do; closed channels with persisted ChannelMonitors
+        // also do — they may have outputs awaiting CSV maturity, HTLC timeouts,
+        // or breach-justice detection. Skipping block_connected for those would
+        // strand funds (e.g. force-close to_self outputs never emit
+        // SpendableOutputs).
+        let has_channels = AtomicBool::new(
+            !channel_manager.list_channels().is_empty()
+                || !chain_monitor.list_monitors().is_empty(),
+        );
 
         Ok((
             Self {
@@ -299,6 +313,7 @@ impl LightningManager {
                 kv_store,
                 event_tx,
                 has_channels,
+                tick_count: AtomicU64::new(0),
                 network,
                 wallet: Mutex::new(None),
                 seed,
@@ -345,11 +360,16 @@ impl LightningManager {
     ///
     /// During IBD with no open channels, this is a fast no-op.
     pub fn block_connected(&self, block: &bitcoin::Block, height: u32) {
-        // Update has_channels flag if channels appeared since startup
+        // Update flag if any channel state appeared since startup. We must
+        // process every block whenever a ChannelMonitor exists — including
+        // monitors for already-closed channels still awaiting CSV maturity or
+        // breach-justice detection.
         if !self.has_channels.load(Ordering::Relaxed) {
-            if !self.channel_manager.list_channels().is_empty() {
+            if !self.channel_manager.list_channels().is_empty()
+                || !self.chain_monitor.list_monitors().is_empty()
+            {
                 self.has_channels.store(true, Ordering::Relaxed);
-                info!("channel detected — enabling full block processing for LDK");
+                info!("channel state detected — enabling full block processing for LDK");
             } else if !height.is_multiple_of(10000) {
                 // Skip during IBD if no channels exist (optimization)
                 return;
@@ -622,9 +642,19 @@ impl LightningManager {
         // regularly or incoming HTLCs will never be settled.
         self.channel_manager.process_pending_htlc_forwards();
 
-        // LDK timer ticks (manages retries, channel state, etc.)
-        self.channel_manager.timer_tick_occurred();
-        self.peer_manager.timer_tick_occurred();
+        // LDK timer ticks must fire at their *documented* cadence, not on every
+        // tick(). PeerManager expects ~10s (it drives ping/pong keepalive — too
+        // fast makes pong deadlines fire prematurely and disconnects healthy
+        // peers, causing connection flapping). ChannelManager expects ~60s
+        // (its internal timeouts are counted in these ticks). tick() runs ≈1×/s,
+        // so gate by elapsed ticks.
+        let n = self.tick_count.fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_multiple_of(10) {
+            self.peer_manager.timer_tick_occurred();
+        }
+        if n.is_multiple_of(60) {
+            self.channel_manager.timer_tick_occurred();
+        }
         // Process pending peer manager events (sends gossip queries, etc.)
         self.peer_manager.process_events();
     }
@@ -651,6 +681,148 @@ impl LightningManager {
             if let Err(e) = self.kv_store.write("scorer", "", "scorer", buf) {
                 warn!(?e, "failed to persist scorer");
             }
+        }
+    }
+
+    /// Current fee rate for on-chain sweeps in sat/kw, as used by the
+    /// internal SpendableOutputs sweeper.
+    pub fn sweep_fee_rate_sat_per_kw(&self) -> u32 {
+        self.fee_estimator.sweep_fee_rate()
+    }
+
+    /// The Bitcoin network this Lightning manager operates on.
+    pub fn network(&self) -> bitcoin::Network {
+        self.network
+    }
+
+    /// Return the P2WPKH address where LDK sweeps SpendableOutputs by default.
+    ///
+    /// Coop-close to_remote outputs and force-close to_self sweeps both land
+    /// here. Useful for explorer queries and for `sweep_outpoints` callers
+    /// that need to know where to look.
+    pub fn keys_destination_address(&self) -> Result<bitcoin::Address, LightningError> {
+        let script = self
+            .keys_manager
+            .get_destination_script([0u8; 32])
+            .map_err(|_| LightningError::KeyManagement("get_destination_script failed".into()))?;
+        bitcoin::Address::from_script(&script, self.network)
+            .map_err(|e| LightningError::KeyManagement(format!("script→address: {e}")))
+    }
+
+    /// Build and broadcast a sweep transaction from arbitrary
+    /// `SpendableOutputDescriptor`s to `dest_script`.
+    ///
+    /// Callers can mix `StaticOutput` (synthesized from on-chain UTXOs at our
+    /// destination script — see `sweep_outpoints`) with
+    /// `DelayedPaymentOutput` / `StaticPaymentOutput` from closed-channel
+    /// monitors (see `monitor_spendable_outputs`) in a single tx, since
+    /// `KeysManager::spend_spendable_outputs` signs each descriptor variant
+    /// independently.
+    pub fn sweep_descriptors(
+        &self,
+        descriptors: Vec<SpendableOutputDescriptor>,
+        dest_script: bitcoin::ScriptBuf,
+        fee_rate_sat_per_kw: u32,
+    ) -> Result<bitcoin::Txid, LightningError> {
+        use bitcoin::secp256k1::Secp256k1;
+
+        if descriptors.is_empty() {
+            return Err(LightningError::KeyManagement(
+                "no descriptors to sweep".into(),
+            ));
+        }
+
+        let descriptor_refs: Vec<&SpendableOutputDescriptor> = descriptors.iter().collect();
+
+        let secp = Secp256k1::new();
+        let tx = self
+            .keys_manager
+            .spend_spendable_outputs(
+                &descriptor_refs,
+                Vec::new(),
+                dest_script,
+                fee_rate_sat_per_kw,
+                None,
+                &secp,
+            )
+            .map_err(|_| LightningError::KeyManagement("spend_spendable_outputs failed".into()))?;
+
+        let txid = tx.compute_txid();
+        info!(%txid, descriptor_count = descriptor_refs.len(), "broadcasting external sweep transaction");
+        use lightning::chain::chaininterface::BroadcasterInterface;
+        self.broadcaster.broadcast_transactions(&[&tx]);
+        Ok(txid)
+    }
+
+    /// Build and broadcast a transaction sweeping the given UTXOs at our
+    /// KeysManager destination script to `dest_script`. Convenience wrapper
+    /// over `sweep_descriptors` that synthesizes `StaticOutput` descriptors.
+    pub fn sweep_outpoints(
+        &self,
+        inputs: Vec<(bitcoin::OutPoint, bitcoin::TxOut)>,
+        dest_script: bitcoin::ScriptBuf,
+        fee_rate_sat_per_kw: u32,
+    ) -> Result<bitcoin::Txid, LightningError> {
+        if inputs.is_empty() {
+            return Err(LightningError::KeyManagement("no inputs to sweep".into()));
+        }
+        let descriptors: Vec<SpendableOutputDescriptor> = inputs
+            .into_iter()
+            .map(|(op, txout)| {
+                // LDK outpoint indexes are u16; reject rather than truncate.
+                let index = u16::try_from(op.vout).map_err(|_| {
+                    LightningError::KeyManagement(format!(
+                        "outpoint {}:{} has out-of-range vout",
+                        op.txid, op.vout
+                    ))
+                })?;
+                Ok(SpendableOutputDescriptor::StaticOutput {
+                    outpoint: lightning::chain::transaction::OutPoint {
+                        txid: op.txid,
+                        index,
+                    },
+                    output: txout,
+                    channel_keys_id: None,
+                })
+            })
+            .collect::<Result<_, LightningError>>()?;
+        self.sweep_descriptors(descriptors, dest_script, fee_rate_sat_per_kw)
+    }
+
+    /// Return all channel monitor IDs known to the chain monitor. Includes
+    /// monitors for closed channels — those track on-chain claim state until
+    /// fully resolved.
+    pub fn list_channel_monitor_ids(&self) -> Vec<lightning::ln::types::ChannelId> {
+        self.chain_monitor.list_monitors()
+    }
+
+    /// Return the funding outpoint for a given channel monitor, if it exists.
+    /// Useful for explorer queries to find a closed channel's close tx.
+    pub fn monitor_funding_outpoint(
+        &self,
+        channel_id: lightning::ln::types::ChannelId,
+    ) -> Option<bitcoin::OutPoint> {
+        let mon = self.chain_monitor.get_monitor(channel_id).ok()?;
+        let op = mon.get_funding_txo();
+        Some(bitcoin::OutPoint {
+            txid: op.txid,
+            vout: op.index as u32,
+        })
+    }
+
+    /// Ask a channel monitor for the spendable output descriptors yielded by
+    /// `tx` (which must be a tx that spent the channel's funding output, e.g.
+    /// a coop-close or force-close commitment, and which has reached enough
+    /// confirmations relative to to_self_delay/anti-reorg).
+    pub fn monitor_spendable_outputs(
+        &self,
+        channel_id: lightning::ln::types::ChannelId,
+        tx: &bitcoin::Transaction,
+        confirmation_height: u32,
+    ) -> Vec<SpendableOutputDescriptor> {
+        match self.chain_monitor.get_monitor(channel_id) {
+            Ok(mon) => mon.get_spendable_outputs(tx, confirmation_height),
+            Err(_) => Vec::new(),
         }
     }
 

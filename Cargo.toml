@@ -64,6 +64,7 @@ axum = { version = "0.7", features = ["json"] }
 tower = "0.5"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 jsonrpsee = { version = "0.24", features = ["server"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

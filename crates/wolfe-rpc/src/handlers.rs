@@ -607,6 +607,458 @@ async fn dispatch_rpc(
             Ok(json!(result))
         }
 
+        // Reconcile LDK's local channel view against on-chain reality.
+        //
+        // This node can't answer it alone: libbitcoinkernel 0.2 exposes no
+        // UTXO lookup and the node prunes, so funding blocks may be gone from
+        // disk. Instead we ask a block explorer whether each channel's funding
+        // output is still unspent. If LDK lists a channel as ready but the
+        // funding output has been spent on-chain, the channel was closed
+        // (cooperatively or via force-close) and LDK's state has diverged.
+        //
+        // Params: [explorer_base_url?]  (default: network-appropriate
+        // mempool.space instance; required on regtest)
+        "reconcilechannels" => {
+            let ln = state
+                .lightning()
+                .ok_or_else(|| RpcError::Lightning("lightning not enabled".to_string()))?;
+
+            let base = match get_param_str(params, 0) {
+                Some(raw) => validate_explorer_base(raw)?,
+                None => default_explorer_base(state.network)?.to_string(),
+            };
+            let client = explorer_client(&base).await?;
+
+            let channels = ln.channel_manager().list_channels();
+
+            // Run explorer lookups concurrently (capped) so a slow or
+            // unreachable explorer costs ~ceil(n/8) * timeout instead of
+            // n * timeout for the whole RPC.
+            let mut lookups: std::collections::HashMap<usize, Result<Value, String>> =
+                std::collections::HashMap::new();
+            let mut join_set = tokio::task::JoinSet::new();
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(8));
+            for (i, c) in channels.iter().enumerate() {
+                let Some(op) = c.funding_txo else { continue };
+                let client = client.clone();
+                let base = base.clone();
+                let semaphore = semaphore.clone();
+                let (txid, vout) = (op.txid.to_string(), op.index);
+                join_set.spawn(async move {
+                    let _permit = semaphore.acquire_owned().await;
+                    (i, explorer_outspend(&client, &base, &txid, vout).await)
+                });
+            }
+            while let Some(joined) = join_set.join_next().await {
+                if let Ok((i, result)) = joined {
+                    lookups.insert(i, result);
+                }
+            }
+
+            let mut results = Vec::with_capacity(channels.len());
+            let (mut open, mut closed, mut unknown, mut no_funding) = (0u32, 0u32, 0u32, 0u32);
+
+            for (i, c) in channels.iter().enumerate() {
+                let funding = c.funding_txo.map(|op| (op.txid.to_string(), op.index));
+
+                let (verdict, detail, onchain) = match &funding {
+                    None => {
+                        no_funding += 1;
+                        (
+                            "NO_FUNDING_TX",
+                            "channel has no funding outpoint yet (still negotiating)".to_string(),
+                            json!({ "checked": false }),
+                        )
+                    }
+                    Some((txid, _vout)) => {
+                        let lookup = lookups
+                            .remove(&i)
+                            .unwrap_or_else(|| Err("lookup task failed".to_string()));
+                        match lookup {
+                            Err(e) => {
+                                unknown += 1;
+                                (
+                                    "UNKNOWN",
+                                    format!("explorer lookup failed: {e}"),
+                                    json!({
+                                        "checked": false,
+                                        "explorer_url": format!("{base}/tx/{txid}"),
+                                    }),
+                                )
+                            }
+                            Ok(v) => {
+                                let spent =
+                                    v.get("spent").and_then(|x| x.as_bool()).unwrap_or(false);
+                                if spent {
+                                    closed += 1;
+                                    let stx = v.get("txid").and_then(|x| x.as_str());
+                                    let height =
+                                        v.pointer("/status/block_height").and_then(|x| x.as_u64());
+                                    let detail = format!(
+                                        "funding output SPENT on-chain{} — channel closed; LDK still reports is_channel_ready={} (state divergence)",
+                                        height.map(|h| format!(" at height {h}")).unwrap_or_default(),
+                                        c.is_channel_ready
+                                    );
+                                    (
+                                        "CLOSED_ONCHAIN",
+                                        detail,
+                                        json!({
+                                            "checked": true,
+                                            "funding_spent": true,
+                                            "spending_txid": stx,
+                                            "spent_block_height": height,
+                                            "explorer_url": format!("{base}/tx/{txid}"),
+                                        }),
+                                    )
+                                } else {
+                                    open += 1;
+                                    (
+                                        "OPEN_CONFIRMED",
+                                        "funding output unspent on-chain — channel genuinely open"
+                                            .to_string(),
+                                        json!({
+                                            "checked": true,
+                                            "funding_spent": false,
+                                            "explorer_url": format!("{base}/tx/{txid}"),
+                                        }),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                };
+
+                results.push(json!({
+                    "channel_id": hex::encode(c.channel_id.0),
+                    "counterparty": c.counterparty.node_id.to_string(),
+                    "capacity_sat": c.channel_value_satoshis,
+                    "is_outbound": c.is_outbound,
+                    "funding_outpoint": funding.map(|(t, v)| format!("{t}:{v}")),
+                    "ldk_view": {
+                        "is_channel_ready": c.is_channel_ready,
+                        "is_usable": c.is_usable,
+                        "short_channel_id": c.short_channel_id,
+                        "outbound_capacity_msat": c.outbound_capacity_msat,
+                        "inbound_capacity_msat": c.inbound_capacity_msat,
+                    },
+                    "onchain_view": onchain,
+                    "verdict": verdict,
+                    "detail": detail,
+                }));
+            }
+
+            Ok(json!({
+                "explorer": base,
+                "channels": results,
+                "summary": {
+                    "total": channels.len(),
+                    "open_confirmed": open,
+                    "closed_onchain": closed,
+                    "no_funding_tx": no_funding,
+                    "unknown": unknown,
+                },
+            }))
+        }
+
+        // Sweep all LDK-controlled funds to an external address (e.g. an
+        // lnd `lncli newaddress` output). Bundles two sources:
+        //
+        //   (a) UTXOs at the KeysManager destination script — these are the
+        //       results of prior LDK SpendableOutputs sweeps (P2WPKH).
+        //
+        //   (b) Pending close-related claims from any ChannelMonitor — for
+        //       each monitor whose funding outpoint is on-chain-spent, we ask
+        //       LDK for the descriptors corresponding to the close tx, which
+        //       includes CSV-locked to_self outputs from force-closes.
+        //
+        // Combining both sources in one transaction avoids dust-output
+        // failures that otherwise plague tiny force-close to_self sweeps.
+        //
+        // Params:
+        //   0: destination address (required, must match node network)
+        //   1: fee_rate sat/vB (optional, default = mempool sweep rate)
+        //   2: explorer base URL (optional, default: network-appropriate
+        //      mempool.space instance; required on regtest)
+        //   3: include_unconfirmed bool (optional, default false — set true
+        //      to spend in-mempool UTXOs as CPFP children)
+        //
+        // Returns: txid + bundle summary, or dry-run info if no inputs found.
+        "ln_sweep_to_address" => {
+            let ln = state
+                .lightning()
+                .ok_or_else(|| RpcError::Lightning("lightning not enabled".to_string()))?;
+
+            let dest_str = get_param_str(params, 0)
+                .ok_or_else(|| RpcError::InvalidParams("destination address required".into()))?;
+
+            let fee_rate_sat_per_vb = get_param_i64(params, 1).map(|v| v.max(1) as u32);
+            let base = match get_param_str(params, 2) {
+                Some(raw) => validate_explorer_base(raw)?,
+                None => default_explorer_base(state.network)?.to_string(),
+            };
+            let include_unconfirmed = get_param_bool(params, 3).unwrap_or(false);
+
+            // Resolve KeysManager destination address
+            let src_addr = ln
+                .keys_destination_address()
+                .map_err(|e| RpcError::Lightning(format!("destination: {e}")))?;
+
+            // Parse destination address and check network matches
+            let parsed_dest = dest_str
+                .parse::<bitcoin::Address<_>>()
+                .map_err(|e| RpcError::InvalidParams(format!("bad address: {e}")))?;
+            let dest_addr = parsed_dest
+                .require_network(ln.network())
+                .map_err(|e| RpcError::InvalidParams(format!("network mismatch: {e}")))?;
+            let dest_script = dest_addr.script_pubkey();
+
+            // Fetch UTXOs from explorer
+            let client = explorer_client(&base).await?;
+
+            let url = format!("{base}/api/address/{src_addr}/utxo");
+            let resp = client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| RpcError::Internal(format!("explorer fetch: {e}")))?;
+            if !resp.status().is_success() {
+                return Err(RpcError::Internal(format!(
+                    "explorer returned {} for {url}",
+                    resp.status()
+                )));
+            }
+            let utxos: Vec<Value> = resp
+                .json()
+                .await
+                .map_err(|e| RpcError::Internal(format!("explorer parse: {e}")))?;
+
+            // ─── (a) Synthesize StaticOutput descriptors from destination UTXOs ──
+            let mut descriptors: Vec<lightning::sign::SpendableOutputDescriptor> = Vec::new();
+            let mut skipped_unconfirmed: u32 = 0;
+            let mut total_in_sat: u64 = 0;
+            let mut utxo_summary: Vec<Value> = Vec::new();
+            for u in &utxos {
+                let txid_s = u
+                    .get("txid")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| RpcError::Internal("utxo missing txid".into()))?;
+                let vout_raw = u
+                    .get("vout")
+                    .and_then(|x| x.as_u64())
+                    .ok_or_else(|| RpcError::Internal("utxo missing vout".into()))?;
+                // LDK outpoint indexes are u16; reject rather than truncate.
+                let vout = u16::try_from(vout_raw).map_err(|_| {
+                    RpcError::Internal(format!("utxo {txid_s} has out-of-range vout {vout_raw}"))
+                })?;
+                let value = u
+                    .get("value")
+                    .and_then(|x| x.as_u64())
+                    .ok_or_else(|| RpcError::Internal("utxo missing value".into()))?;
+                let confirmed = u
+                    .pointer("/status/confirmed")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
+                let height = u.pointer("/status/block_height").and_then(|x| x.as_u64());
+
+                if !confirmed && !include_unconfirmed {
+                    skipped_unconfirmed += 1;
+                    utxo_summary.push(json!({
+                        "txid": txid_s, "vout": vout, "value_sat": value,
+                        "confirmed": false, "included": false,
+                        "kind": "static_output",
+                        "note": "skipped (pass include_unconfirmed=true to spend as CPFP)",
+                    }));
+                    continue;
+                }
+
+                let txid: bitcoin::Txid = txid_s
+                    .parse()
+                    .map_err(|e| RpcError::Internal(format!("bad txid {txid_s}: {e}")))?;
+                descriptors.push(lightning::sign::SpendableOutputDescriptor::StaticOutput {
+                    outpoint: lightning::chain::transaction::OutPoint { txid, index: vout },
+                    output: bitcoin::TxOut {
+                        value: bitcoin::Amount::from_sat(value),
+                        script_pubkey: src_addr.script_pubkey(),
+                    },
+                    channel_keys_id: None,
+                });
+                total_in_sat += value;
+                utxo_summary.push(json!({
+                    "txid": txid_s, "vout": vout, "value_sat": value,
+                    "confirmed": confirmed, "block_height": height, "included": true,
+                    "kind": "static_output",
+                }));
+            }
+
+            // ─── (b) Pending close-channel descriptors from ChannelMonitors ──
+            // For each monitor whose funding outpoint is spent on-chain, ask
+            // LDK what's claimable from the close transaction. This captures
+            // CSV-locked to_self outputs that the user's automatic sweep may
+            // have failed to broadcast (dust output, network policy, etc.).
+            let monitor_ids = ln.list_channel_monitor_ids();
+            let mut close_summary: Vec<Value> = Vec::new();
+            for cid in &monitor_ids {
+                let funding_op = match ln.monitor_funding_outpoint(*cid) {
+                    Some(op) => op,
+                    None => continue,
+                };
+
+                // Look up the funding-output's spending tx (if any)
+                let outspend = match explorer_outspend(
+                    &client,
+                    &base,
+                    &funding_op.txid.to_string(),
+                    funding_op.vout as u16,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let spent = outspend
+                    .get("spent")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
+                if !spent {
+                    continue;
+                }
+                let close_txid_s = match outspend.get("txid").and_then(|x| x.as_str()) {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                };
+                let close_height = match outspend
+                    .pointer("/status/block_height")
+                    .and_then(|x| x.as_u64())
+                {
+                    Some(h) => h as u32,
+                    None => continue, // unconfirmed close — skip
+                };
+
+                // Fetch raw tx hex and deserialize
+                let hex_url = format!("{base}/api/tx/{close_txid_s}/hex");
+                let close_tx: bitcoin::Transaction = match client.get(&hex_url).send().await {
+                    Ok(r) if r.status().is_success() => match r.text().await {
+                        Ok(hex) => match hex::decode(hex.trim()) {
+                            Ok(bytes) => match bitcoin::consensus::deserialize(&bytes) {
+                                Ok(tx) => tx,
+                                Err(_) => continue,
+                            },
+                            Err(_) => continue,
+                        },
+                        Err(_) => continue,
+                    },
+                    _ => continue,
+                };
+
+                let raw_close_descriptors =
+                    ln.monitor_spendable_outputs(*cid, &close_tx, close_height);
+
+                // Filter out descriptors whose outpoints are already spent
+                // on-chain. LDK's get_spendable_outputs replays descriptors
+                // from the close tx regardless of subsequent spends, so we
+                // need to verify each is actually still claimable to avoid
+                // double-spend attempts.
+                let mut close_descriptors: Vec<lightning::sign::SpendableOutputDescriptor> =
+                    Vec::new();
+                let mut already_spent: u32 = 0;
+                for d in raw_close_descriptors {
+                    let op = d.spendable_outpoint();
+                    let outspend =
+                        explorer_outspend(&client, &base, &op.txid.to_string(), op.index).await;
+                    let spent = match outspend {
+                        Ok(v) => v.get("spent").and_then(|x| x.as_bool()).unwrap_or(false),
+                        Err(_) => {
+                            // explorer flaked — be conservative, skip
+                            already_spent += 1;
+                            continue;
+                        }
+                    };
+                    if spent {
+                        already_spent += 1;
+                        continue;
+                    }
+                    close_descriptors.push(d);
+                }
+
+                let count = close_descriptors.len();
+                let mut value_sum: u64 = 0;
+                for d in &close_descriptors {
+                    use lightning::sign::SpendableOutputDescriptor as S;
+                    let (kind, v, outp) = match d {
+                        S::StaticOutput {
+                            outpoint, output, ..
+                        } => ("static_output", output.value.to_sat(), *outpoint),
+                        S::DelayedPaymentOutput(dp) => {
+                            ("delayed_payment", dp.output.value.to_sat(), dp.outpoint)
+                        }
+                        S::StaticPaymentOutput(sp) => {
+                            ("static_payment", sp.output.value.to_sat(), sp.outpoint)
+                        }
+                    };
+                    value_sum += v;
+                    utxo_summary.push(json!({
+                        "txid": outp.txid.to_string(),
+                        "vout": outp.index,
+                        "value_sat": v,
+                        "confirmed": true,
+                        "block_height": close_height,
+                        "included": true,
+                        "kind": kind,
+                        "channel_id": hex::encode(cid.0),
+                    }));
+                }
+                total_in_sat += value_sum;
+                close_summary.push(json!({
+                    "channel_id": hex::encode(cid.0),
+                    "funding_outpoint": format!("{}:{}", funding_op.txid, funding_op.vout),
+                    "close_txid": close_txid_s,
+                    "close_block_height": close_height,
+                    "descriptors_recovered": count,
+                    "descriptors_skipped_already_spent": already_spent,
+                    "total_value_sat": value_sum,
+                }));
+                descriptors.extend(close_descriptors);
+            }
+
+            if descriptors.is_empty() {
+                return Ok(json!({
+                    "txid": null,
+                    "broadcast": false,
+                    "from_address": src_addr.to_string(),
+                    "to_address": dest_addr.to_string(),
+                    "utxos": utxo_summary,
+                    "closed_channels": close_summary,
+                    "skipped_unconfirmed": skipped_unconfirmed,
+                    "detail": "no eligible inputs found",
+                }));
+            }
+
+            // Convert fee rate sat/vB → sat/kw (×250)
+            let sat_per_kw: u32 = match fee_rate_sat_per_vb {
+                Some(r) => r.saturating_mul(250).max(253),
+                None => ln.sweep_fee_rate_sat_per_kw(),
+            };
+
+            let txid = ln
+                .sweep_descriptors(descriptors, dest_script, sat_per_kw)
+                .map_err(|e| RpcError::Lightning(format!("sweep: {e}")))?;
+
+            Ok(json!({
+                "txid": txid.to_string(),
+                "broadcast": true,
+                "from_address": src_addr.to_string(),
+                "to_address": dest_addr.to_string(),
+                "fee_rate_sat_per_kw": sat_per_kw,
+                "fee_rate_sat_per_vb": sat_per_kw / 250,
+                "total_input_sat": total_in_sat,
+                "input_count": utxo_summary.iter().filter(|v| v.get("included").and_then(|x| x.as_bool()) == Some(true)).count(),
+                "skipped_unconfirmed": skipped_unconfirmed,
+                "utxos": utxo_summary,
+                "closed_channels": close_summary,
+                "explorer_url": format!("{base}/tx/{txid}"),
+            }))
+        }
+
         "ln_listpeers" => {
             let ln = state
                 .lightning()
@@ -1011,6 +1463,133 @@ async fn dispatch_rpc(
 }
 
 // ─── Parameter extraction helpers ────────────────────────────────────────────
+
+/// Pick a network-appropriate default explorer base URL. Networks without a
+/// public esplora instance (regtest, unrecognized) get an error telling the
+/// caller to pass an explorer base URL explicitly.
+fn default_explorer_base(network: bitcoin::Network) -> Result<&'static str, RpcError> {
+    match network {
+        bitcoin::Network::Bitcoin => Ok("https://mempool.space"),
+        bitcoin::Network::Testnet => Ok("https://mempool.space/testnet"),
+        bitcoin::Network::Signet => Ok("https://mempool.space/signet"),
+        other => Err(RpcError::InvalidParams(format!(
+            "no default explorer for network '{other}'; pass an explorer base URL param"
+        ))),
+    }
+}
+
+/// Validate a caller-supplied explorer base URL. The RPC server can run with
+/// auth disabled, so an arbitrary URL here is an SSRF primitive: require
+/// http(s) with a host, no embedded credentials, no query/fragment, and
+/// refuse link-local addresses (cloud metadata endpoints). Loopback and
+/// private hosts stay allowed — pointing at a self-hosted esplora is the main
+/// reason to override the default. Returns the base without a trailing slash.
+fn validate_explorer_base(raw: &str) -> Result<String, RpcError> {
+    let url = reqwest::Url::parse(raw)
+        .map_err(|e| RpcError::InvalidParams(format!("bad explorer URL: {e}")))?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err(RpcError::InvalidParams(
+            "explorer URL must use http or https".into(),
+        ));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(RpcError::InvalidParams(
+            "explorer URL must not embed credentials".into(),
+        ));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(RpcError::InvalidParams(
+            "explorer URL must not have a query or fragment".into(),
+        ));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| RpcError::InvalidParams("explorer URL missing host".into()))?;
+    if let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
+        if is_link_local(ip) {
+            return Err(RpcError::InvalidParams(
+                "explorer URL must not target link-local addresses".into(),
+            ));
+        }
+    }
+    Ok(url.as_str().trim_end_matches('/').to_string())
+}
+
+fn is_link_local(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => v6.is_unicast_link_local(),
+    }
+}
+
+/// Build the HTTP client for explorer requests. For domain hosts, resolve the
+/// name here, reject any link-local result, and pin the resolved addresses
+/// into the client — otherwise a hostname could pass validation and then
+/// re-resolve to a blocked address for the actual request (DNS rebinding).
+///
+/// `base` must come from `validate_explorer_base` / `default_explorer_base`.
+async fn explorer_client(base: &str) -> Result<reqwest::Client, RpcError> {
+    let url = reqwest::Url::parse(base)
+        .map_err(|e| RpcError::InvalidParams(format!("bad explorer URL: {e}")))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| RpcError::InvalidParams("explorer URL missing host".into()))?
+        .to_string();
+
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15));
+
+    if host
+        .trim_matches(['[', ']'])
+        .parse::<std::net::IpAddr>()
+        .is_err()
+    {
+        let port = url.port_or_known_default().unwrap_or(443);
+        let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .map_err(|e| {
+                RpcError::InvalidParams(format!("explorer host '{host}' did not resolve: {e}"))
+            })?
+            .collect();
+        if addrs.is_empty() {
+            return Err(RpcError::InvalidParams(format!(
+                "explorer host '{host}' did not resolve to any address"
+            )));
+        }
+        if addrs.iter().any(|a| is_link_local(a.ip())) {
+            return Err(RpcError::InvalidParams(format!(
+                "explorer host '{host}' resolves to a link-local address"
+            )));
+        }
+        builder = builder.resolve_to_addrs(&host, &addrs);
+    }
+
+    builder
+        .build()
+        .map_err(|e| RpcError::Internal(format!("http client: {e}")))
+}
+
+/// Query a block explorer (esplora/mempool.space API) for the spend status of
+/// a transaction output. Returns the parsed JSON body, e.g.
+/// `{"spent":true,"txid":"<spending>","status":{"confirmed":true,"block_height":N}}`.
+///
+/// `base` must come from `validate_explorer_base` / `default_explorer_base`.
+async fn explorer_outspend(
+    client: &reqwest::Client,
+    base: &str,
+    txid: &str,
+    vout: u16,
+) -> Result<Value, String> {
+    let url = reqwest::Url::parse(&format!("{base}/api/tx/{txid}/outspend/{vout}"))
+        .map_err(|e| format!("bad explorer URL: {e}"))?;
+    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "explorer returned {} for {txid}:{vout} (funding tx may be unconfirmed or unknown)",
+            resp.status()
+        ));
+    }
+    resp.json::<Value>().await.map_err(|e| e.to_string())
+}
 
 fn get_param_str(params: Option<&Value>, index: usize) -> Option<&str> {
     params?.as_array()?.get(index)?.as_str()
