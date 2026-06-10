@@ -842,11 +842,14 @@ async fn dispatch_rpc(
                     .get("txid")
                     .and_then(|x| x.as_str())
                     .ok_or_else(|| RpcError::Internal("utxo missing txid".into()))?;
-                let vout = u
+                let vout_raw = u
                     .get("vout")
                     .and_then(|x| x.as_u64())
-                    .ok_or_else(|| RpcError::Internal("utxo missing vout".into()))?
-                    as u32;
+                    .ok_or_else(|| RpcError::Internal("utxo missing vout".into()))?;
+                // LDK outpoint indexes are u16; reject rather than truncate.
+                let vout = u16::try_from(vout_raw).map_err(|_| {
+                    RpcError::Internal(format!("utxo {txid_s} has out-of-range vout {vout_raw}"))
+                })?;
                 let value = u
                     .get("value")
                     .and_then(|x| x.as_u64())
@@ -872,10 +875,7 @@ async fn dispatch_rpc(
                     .parse()
                     .map_err(|e| RpcError::Internal(format!("bad txid {txid_s}: {e}")))?;
                 descriptors.push(lightning::sign::SpendableOutputDescriptor::StaticOutput {
-                    outpoint: lightning::chain::transaction::OutPoint {
-                        txid,
-                        index: vout as u16,
-                    },
+                    outpoint: lightning::chain::transaction::OutPoint { txid, index: vout },
                     output: bitcoin::TxOut {
                         value: bitcoin::Amount::from_sat(value),
                         script_pubkey: src_addr.script_pubkey(),
