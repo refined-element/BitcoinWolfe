@@ -768,15 +768,24 @@ impl LightningManager {
         }
         let descriptors: Vec<SpendableOutputDescriptor> = inputs
             .into_iter()
-            .map(|(op, txout)| SpendableOutputDescriptor::StaticOutput {
-                outpoint: lightning::chain::transaction::OutPoint {
-                    txid: op.txid,
-                    index: op.vout as u16,
-                },
-                output: txout,
-                channel_keys_id: None,
+            .map(|(op, txout)| {
+                // LDK outpoint indexes are u16; reject rather than truncate.
+                let index = u16::try_from(op.vout).map_err(|_| {
+                    LightningError::KeyManagement(format!(
+                        "outpoint {}:{} has out-of-range vout",
+                        op.txid, op.vout
+                    ))
+                })?;
+                Ok(SpendableOutputDescriptor::StaticOutput {
+                    outpoint: lightning::chain::transaction::OutPoint {
+                        txid: op.txid,
+                        index,
+                    },
+                    output: txout,
+                    channel_keys_id: None,
+                })
             })
-            .collect();
+            .collect::<Result<_, LightningError>>()?;
         self.sweep_descriptors(descriptors, dest_script, fee_rate_sat_per_kw)
     }
 
