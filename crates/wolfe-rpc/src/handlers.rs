@@ -627,11 +627,7 @@ async fn dispatch_rpc(
                 Some(raw) => validate_explorer_base(raw)?,
                 None => default_explorer_base(state.network)?.to_string(),
             };
-
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .map_err(|e| RpcError::Internal(format!("http client: {e}")))?;
+            let client = explorer_client(&base).await?;
 
             let channels = ln.channel_manager().list_channels();
 
@@ -1513,17 +1509,66 @@ fn validate_explorer_base(raw: &str) -> Result<String, RpcError> {
         .host_str()
         .ok_or_else(|| RpcError::InvalidParams("explorer URL missing host".into()))?;
     if let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
-        let link_local = match ip {
-            std::net::IpAddr::V4(v4) => v4.is_link_local(),
-            std::net::IpAddr::V6(v6) => v6.is_unicast_link_local(),
-        };
-        if link_local {
+        if is_link_local(ip) {
             return Err(RpcError::InvalidParams(
                 "explorer URL must not target link-local addresses".into(),
             ));
         }
     }
     Ok(url.as_str().trim_end_matches('/').to_string())
+}
+
+fn is_link_local(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => v6.is_unicast_link_local(),
+    }
+}
+
+/// Build the HTTP client for explorer requests. For domain hosts, resolve the
+/// name here, reject any link-local result, and pin the resolved addresses
+/// into the client — otherwise a hostname could pass validation and then
+/// re-resolve to a blocked address for the actual request (DNS rebinding).
+///
+/// `base` must come from `validate_explorer_base` / `default_explorer_base`.
+async fn explorer_client(base: &str) -> Result<reqwest::Client, RpcError> {
+    let url = reqwest::Url::parse(base)
+        .map_err(|e| RpcError::InvalidParams(format!("bad explorer URL: {e}")))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| RpcError::InvalidParams("explorer URL missing host".into()))?
+        .to_string();
+
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15));
+
+    if host
+        .trim_matches(['[', ']'])
+        .parse::<std::net::IpAddr>()
+        .is_err()
+    {
+        let port = url.port_or_known_default().unwrap_or(443);
+        let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .map_err(|e| {
+                RpcError::InvalidParams(format!("explorer host '{host}' did not resolve: {e}"))
+            })?
+            .collect();
+        if addrs.is_empty() {
+            return Err(RpcError::InvalidParams(format!(
+                "explorer host '{host}' did not resolve to any address"
+            )));
+        }
+        if addrs.iter().any(|a| is_link_local(a.ip())) {
+            return Err(RpcError::InvalidParams(format!(
+                "explorer host '{host}' resolves to a link-local address"
+            )));
+        }
+        builder = builder.resolve_to_addrs(&host, &addrs);
+    }
+
+    builder
+        .build()
+        .map_err(|e| RpcError::Internal(format!("http client: {e}")))
 }
 
 /// Query a block explorer (esplora/mempool.space API) for the spend status of
