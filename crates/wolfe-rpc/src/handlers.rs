@@ -616,16 +616,17 @@ async fn dispatch_rpc(
         // funding output has been spent on-chain, the channel was closed
         // (cooperatively or via force-close) and LDK's state has diverged.
         //
-        // Params: [explorer_base_url?]  (default https://mempool.space)
+        // Params: [explorer_base_url?]  (default: network-appropriate
+        // mempool.space instance; required on regtest)
         "reconcilechannels" => {
             let ln = state
                 .lightning()
                 .ok_or_else(|| RpcError::Lightning("lightning not enabled".to_string()))?;
 
-            let base = get_param_str(params, 0)
-                .unwrap_or("https://mempool.space")
-                .trim_end_matches('/')
-                .to_string();
+            let base = match get_param_str(params, 0) {
+                Some(raw) => validate_explorer_base(raw)?,
+                None => default_explorer_base(state.network)?.to_string(),
+            };
 
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
@@ -633,10 +634,35 @@ async fn dispatch_rpc(
                 .map_err(|e| RpcError::Internal(format!("http client: {e}")))?;
 
             let channels = ln.channel_manager().list_channels();
+
+            // Run explorer lookups concurrently (capped) so a slow or
+            // unreachable explorer costs ~ceil(n/8) * timeout instead of
+            // n * timeout for the whole RPC.
+            let mut lookups: std::collections::HashMap<usize, Result<Value, String>> =
+                std::collections::HashMap::new();
+            let mut join_set = tokio::task::JoinSet::new();
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(8));
+            for (i, c) in channels.iter().enumerate() {
+                let Some(op) = c.funding_txo else { continue };
+                let client = client.clone();
+                let base = base.clone();
+                let semaphore = semaphore.clone();
+                let (txid, vout) = (op.txid.to_string(), op.index);
+                join_set.spawn(async move {
+                    let _permit = semaphore.acquire_owned().await;
+                    (i, explorer_outspend(&client, &base, &txid, vout).await)
+                });
+            }
+            while let Some(joined) = join_set.join_next().await {
+                if let Ok((i, result)) = joined {
+                    lookups.insert(i, result);
+                }
+            }
+
             let mut results = Vec::with_capacity(channels.len());
             let (mut open, mut closed, mut unknown, mut no_funding) = (0u32, 0u32, 0u32, 0u32);
 
-            for c in &channels {
+            for (i, c) in channels.iter().enumerate() {
                 let funding = c.funding_txo.map(|op| (op.txid.to_string(), op.index));
 
                 let (verdict, detail, onchain) = match &funding {
@@ -648,8 +674,11 @@ async fn dispatch_rpc(
                             json!({ "checked": false }),
                         )
                     }
-                    Some((txid, vout)) => {
-                        match explorer_outspend(&client, &base, txid, *vout).await {
+                    Some((txid, _vout)) => {
+                        let lookup = lookups
+                            .remove(&i)
+                            .unwrap_or_else(|| Err("lookup task failed".to_string()));
+                        match lookup {
                             Err(e) => {
                                 unknown += 1;
                                 (
@@ -1441,17 +1470,75 @@ async fn dispatch_rpc(
 
 // ─── Parameter extraction helpers ────────────────────────────────────────────
 
+/// Pick a network-appropriate default explorer base URL. Networks without a
+/// public esplora instance (regtest, unrecognized) get an error telling the
+/// caller to pass an explorer base URL explicitly.
+fn default_explorer_base(network: bitcoin::Network) -> Result<&'static str, RpcError> {
+    match network {
+        bitcoin::Network::Bitcoin => Ok("https://mempool.space"),
+        bitcoin::Network::Testnet => Ok("https://mempool.space/testnet"),
+        bitcoin::Network::Signet => Ok("https://mempool.space/signet"),
+        other => Err(RpcError::InvalidParams(format!(
+            "no default explorer for network '{other}'; pass an explorer base URL param"
+        ))),
+    }
+}
+
+/// Validate a caller-supplied explorer base URL. The RPC server can run with
+/// auth disabled, so an arbitrary URL here is an SSRF primitive: require
+/// http(s) with a host, no embedded credentials, no query/fragment, and
+/// refuse link-local addresses (cloud metadata endpoints). Loopback and
+/// private hosts stay allowed — pointing at a self-hosted esplora is the main
+/// reason to override the default. Returns the base without a trailing slash.
+fn validate_explorer_base(raw: &str) -> Result<String, RpcError> {
+    let url = reqwest::Url::parse(raw)
+        .map_err(|e| RpcError::InvalidParams(format!("bad explorer URL: {e}")))?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err(RpcError::InvalidParams(
+            "explorer URL must use http or https".into(),
+        ));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(RpcError::InvalidParams(
+            "explorer URL must not embed credentials".into(),
+        ));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(RpcError::InvalidParams(
+            "explorer URL must not have a query or fragment".into(),
+        ));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| RpcError::InvalidParams("explorer URL missing host".into()))?;
+    if let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
+        let link_local = match ip {
+            std::net::IpAddr::V4(v4) => v4.is_link_local(),
+            std::net::IpAddr::V6(v6) => v6.is_unicast_link_local(),
+        };
+        if link_local {
+            return Err(RpcError::InvalidParams(
+                "explorer URL must not target link-local addresses".into(),
+            ));
+        }
+    }
+    Ok(url.as_str().trim_end_matches('/').to_string())
+}
+
 /// Query a block explorer (esplora/mempool.space API) for the spend status of
 /// a transaction output. Returns the parsed JSON body, e.g.
 /// `{"spent":true,"txid":"<spending>","status":{"confirmed":true,"block_height":N}}`.
+///
+/// `base` must come from `validate_explorer_base` / `default_explorer_base`.
 async fn explorer_outspend(
     client: &reqwest::Client,
     base: &str,
     txid: &str,
     vout: u16,
 ) -> Result<Value, String> {
-    let url = format!("{base}/api/tx/{txid}/outspend/{vout}");
-    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let url = reqwest::Url::parse(&format!("{base}/api/tx/{txid}/outspend/{vout}"))
+        .map_err(|e| format!("bad explorer URL: {e}"))?;
+    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!(
             "explorer returned {} for {txid}:{vout} (funding tx may be unconfirmed or unknown)",

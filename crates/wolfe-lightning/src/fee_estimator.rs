@@ -21,7 +21,10 @@ impl WolfeFeeEstimator {
         self.get_est_sat_per_1000_weight(ConfirmationTarget::OutputSpendingFee)
     }
 
-    /// Sample fee rate from mempool histogram at a given percentile (0.0 = lowest, 1.0 = highest).
+    /// Sample fee rate from mempool histogram at a given percentile.
+    ///
+    /// The histogram is in *descending* fee order, so the percentile counts
+    /// down from the top: 0.0 = highest-fee bucket, 1.0 = lowest-fee bucket.
     fn sample_fee_rate_sat_per_vb(&self, percentile: f64) -> f64 {
         let histogram = self.mempool.fee_histogram();
         if histogram.is_empty() {
@@ -68,8 +71,10 @@ impl FeeEstimator for WolfeFeeEstimator {
             // from a peer. Keep this low — a peer (e.g. lnd) proposing ~1 sat/vB
             // on a quiet mempool is reasonable, and rejecting it forces a
             // force-close, which is far more expensive than a cheap coop close.
-            // Sample a low percentile so we accept economical closes.
-            ConfirmationTarget::ChannelCloseMinimum => self.sample_fee_rate_sat_per_vb(0.1),
+            // Percentile 1.0 = the lowest-fee bucket in the descending
+            // histogram, so we accept anything at least as good as the
+            // cheapest thing currently in the mempool.
+            ConfirmationTarget::ChannelCloseMinimum => self.sample_fee_rate_sat_per_vb(1.0),
 
             // Minimum mempool fee
             ConfirmationTarget::MinAllowedAnchorChannelRemoteFee => self.mempool.min_fee_rate(),
